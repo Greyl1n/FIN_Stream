@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0b0f19" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>StreamPulse — Universal Streaming Search & Inventory</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <!-- Top App Bar -->
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="brand" id="brandReset" title="Reset filters and return to home">
+        <div class="brand-logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <polygon points="5 3 19 12 5 21 5 3" fill="currentColor" />
+          </svg>
+        </div>
+        <div>
+          <span class="brand-name">StreamPulse</span>
+          <span class="brand-tag">Universal Catalog & Direct Launch</span>
+        </div>
+      </div>
+
+      <!-- Universal Search Bar with Integrated Category Selector -->
+      <div class="search-wrapper">
+        <div class="search-container">
+          <select id="searchCategorySelect" class="search-category-select" aria-label="Search Category" title="Filter search by category">
+            <option value="">🎬 All Categories</option>
+          </select>
+          <div class="search-input-box">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input
+              type="search"
+              id="searchInput"
+              placeholder="Search titles or keywords across Netflix, Disney+, Max, Yle..."
+              autocomplete="off"
+            />
+            <kbd class="search-Shortcut" id="searchKbd">/</kbd>
+            <button class="clear-search-btn hidden" id="clearSearchBtn" aria-label="Clear search">✕</button>
+          </div>
+        </div>
+        <!-- Smart Category Suggestion Banner when typing a category keyword -->
+        <div class="category-suggestion hidden" id="categorySuggestion"></div>
+      </div>
+
+      <!-- Header Right Actions -->
+      <div class="header-actions">
+        <!-- Country Selector -->
+        <div class="country-select-wrapper" title="Streaming catalog region">
+          <select id="countrySelect" class="country-select" aria-label="Select Country"></select>
+        </div>
+
+        <!-- Watchlist Button -->
+        <button class="action-pill" id="watchlistToggleBtn" title="Saved titles to watch">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+          </svg>
+          <span class="hide-sm">Watchlist</span>
+          <span class="badge-count" id="watchlistCount">0</span>
+        </button>
+
+        <!-- TMDB API Status / Setup Button -->
+        <button class="engine-pill" id="tmdbSettingsBtn" title="Configure TMDB API Key">
+          <span class="status-dot" id="tmdbStatusDot"></span>
+          <span id="tmdbStatusText">TMDB API</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <main class="app-main">
+    <!-- Streaming Services Inventory Filter Bar -->
+    <section class="providers-section">
+      <div class="providers-header">
+        <div class="providers-title-group">
+          <h2 class="section-label">1. Streaming Platforms</h2>
+          <span class="section-hint">Select your services to combine their catalogs • Click any service icon on a title to launch directly</span>
+        </div>
+        <div class="providers-controls">
+          <button class="text-btn" id="selectAllSubBtn" title="Clear platform filter and show all">Showing All Platforms</button>
+        </div>
+      </div>
+
+      <div class="providers-rail" id="providersRail">
+        <!-- Populated dynamically with Netflix, Disney+, Prime Video, Max, Apple TV+, Yle Areena, etc. -->
+      </div>
+    </section>
+
+    <!-- Visual Category Search & Multi-Category Filter Bar -->
+    <section class="categories-section">
+      <div class="providers-header">
+        <div class="providers-title-group">
+          <h2 class="section-label">2. Search by Category</h2>
+          <span class="section-hint">Click one or multiple categories to filter search & catalog results</span>
+        </div>
+        <div class="providers-controls">
+          <button class="text-btn hidden" id="clearCategoriesBtn">Clear Categories</button>
+        </div>
+      </div>
+
+      <div class="categories-rail" id="categoriesRail">
+        <!-- Populated dynamically with icon-badged category pills -->
+      </div>
+    </section>
+
+    <!-- Secondary Filter & Sort Bar -->
+    <section class="filters-bar">
+      <div class="segmented-control" id="mediaTypeControl">
+        <button class="seg-btn active" data-type="all">All Titles</button>
+        <button class="seg-btn" data-type="movie">Movies</button>
+        <button class="seg-btn" data-type="tv">TV Series</button>
+      </div>
+
+      <div class="segmented-control" id="monetizationControl">
+        <button class="seg-btn active" data-monetization="stream" title="Included with subscription or free streaming">
+          Subscription & Free
+        </button>
+        <button class="seg-btn" data-monetization="all" title="Include Rent & Buy stores">
+          + Rent & Buy
+        </button>
+      </div>
+
+      <!-- Sort By Dropdown -->
+      <div class="select-group">
+        <select id="sortSelect" class="filter-select" aria-label="Sort results by" title="Sort results">
+          <option value="POPULAR">🔥 Sort: Most Popular</option>
+          <option value="TRENDING">📈 Sort: Trending Now</option>
+          <option value="IMDB_SCORE">⭐ Sort: Highest Rated (IMDb)</option>
+          <option value="RELEASE_YEAR">📅 Sort: Newest Releases</option>
+          <option value="RANDOM">🎲 Sort: Surprise Me</option>
+        </select>
+      </div>
+
+      <!-- Release Era / Year Filter -->
+      <div class="select-group">
+        <select id="eraSelect" class="filter-select" aria-label="Filter by release decade" title="Release decade">
+          <option value="">🗓️ Any Release Year</option>
+          <option value="2025-2026">New Releases (2025–2026)</option>
+          <option value="2020-2026">2020s (2020–Now)</option>
+          <option value="2010-2019">2010s (2010–2019)</option>
+          <option value="2000-2009">2000s (2000–2009)</option>
+          <option value="1990-1999">1990s (1990–1999)</option>
+          <option value="1900-1989">Classics (Before 1990)</option>
+        </select>
+      </div>
+
+      <div class="results-meta" id="resultsMeta">
+        Loading inventory...
+      </div>
+    </section>
+
+    <!-- Active Filter Chips Summary -->
+    <div class="active-filters hidden" id="activeFiltersBar"></div>
+
+    <!-- Titles Grid -->
+    <section class="catalog-section">
+      <div class="titles-grid" id="titlesGrid"></div>
+
+      <!-- Load More / Pagination -->
+      <div class="load-more-container hidden" id="loadMoreContainer">
+        <button class="primary-btn" id="loadMoreBtn">Load More Titles</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Mobile Bottom Navigation Bar -->
+  <nav class="mobile-bottom-nav">
+    <button class="mob-nav-btn active" data-nav="browse">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+        <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+        <rect x="14" y="14" width="7" height="7" rx="1"></rect>
+        <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+      </svg>
+      <span>Catalog</span>
+    </button>
+    <button class="mob-nav-btn" data-nav="categories">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M4 6h16M4 12h16M4 18h10"></path>
+      </svg>
+      <span>Categories</span>
+    </button>
+    <button class="mob-nav-btn" data-nav="search">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="8"></circle>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      </svg>
+      <span>Search</span>
+    </button>
+    <button class="mob-nav-btn" data-nav="watchlist">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
+      </svg>
+      <span>Watchlist</span>
+    </button>
+    <button class="mob-nav-btn" data-nav="settings">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+      </svg>
+      <span>TMDB API</span>
+    </button>
+  </nav>
+
+  <!-- Title Detail & Direct Launch Modal -->
+  <div class="modal-backdrop hidden" id="detailModal">
+    <div class="modal-card detail-modal-card" role="dialog" aria-modal="true">
+      <button class="modal-close-btn" id="closeDetailModalBtn" aria-label="Close">✕</button>
+      <div id="detailModalContent"></div>
+    </div>
+  </div>
+
+  <!-- TMDB API Key Configuration Modal -->
+  <div class="modal-backdrop hidden" id="tmdbModal">
+    <div class="modal-card settings-modal-card" role="dialog" aria-modal="true">
+      <button class="modal-close-btn" id="closeTmdbModalBtn" aria-label="Close">✕</button>
+      <div class="settings-header">
+        <div class="settings-badge">Dual-Engine Architecture</div>
+        <h2>TMDB API + Direct-Link Engine</h2>
+        <p>
+          StreamPulse is currently active with live streaming catalogs & direct launch links.
+          Add your free <strong>TMDB API Key</strong> (or Read Access Token) to unlock official TMDB discovery,
+          YouTube trailers, and hybrid metadata enrichment.
+        </p>
+      </div>
+
+      <div class="settings-status-box" id="tmdbModalStatusBox"></div>
+
+      <form id="tmdbKeyForm" class="settings-form">
+        <label for="tmdbKeyInput">TMDB API Key (v3) or Read Access Token (v4)</label>
+        <div class="input-row">
+          <input
+            type="password"
+            id="tmdbKeyInput"
+            placeholder="Paste your TMDB API key or Bearer token..."
+            autocomplete="off"
+          />
+          <button type="submit" class="primary-btn" id="saveTmdbKeyBtn">Verify & Save</button>
+        </div>
+      </form>
+
+      <div class="instructions-card">
+        <h3>How to get a free TMDB API key in 60 seconds:</h3>
+        <ol>
+          <li>Create a free account at <a href="https://www.themoviedb.org/signup" target="_blank" rel="noopener">themoviedb.org/signup</a>.</li>
+          <li>Open your <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">TMDB API Settings</a> page.</li>
+          <li>Click <strong>Create</strong> → <strong>Developer</strong>, fill in "Personal Streaming App", and copy your <strong>API Key</strong> (or <strong>API Read Access Token</strong>).</li>
+          <li>Paste it above and click <strong>Verify & Save</strong> — it will be saved to your local <code>.env</code> file automatically.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
