@@ -1,12 +1,24 @@
 /**
  * StreamPulse Frontend Application (Desktop & Mobile PWA)
  * Works seamlessly across ALL environments:
- * 1. Local Python Backend (`python app.py` at http://127.0.0.1:8080 or even when opening index.html via file:// while app.py is running)
+ * 1. Local Python Backend (`python app.py` at http://127.0.0.1:8080)
  * 2. GitHub Pages & Standalone `index.html` (Zero-Server Mode):
- *    - Pre-loaded 315+ multi-category catalog via `static/catalog_data.js` (works on file:// and https://*.github.io)
- *    - Live Zero-Key Universal Search via IMDb JSONP + TVMaze CORS APIs when searching any title outside the snapshot
+ *    - Built-in 415+ multi-category catalog (`window.STREAMPULSE_STATIC_DATA`)
+ *    - Live Zero-Key Universal Search combining:
+ *        a) Apple iTunes Movie Search API (CORS `*`, full synopses, posters, genres, runtime)
+ *        b) TVMaze Series Search API (CORS `*`, full synopses, posters, genres, ratings)
+ *        c) IMDb Live JSONP Search (`v2.sg.media-imdb.com`, universal movie & TV lookup)
  *    - Full Client-Side Live TMDB API Mode when a user adds a free TMDB API key
  */
+
+// Actively unregister any legacy service workers so stale caches never block search updates
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.getRegistrations().then((regs) => {
+    for (const reg of regs) {
+      reg.unregister().catch(() => {});
+    }
+  }).catch(() => {});
+}
 
 const TMDB_API_BASE = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
@@ -75,26 +87,36 @@ const TMDB_ID_TO_GENRE_NAME = {
   37: "Western",
 };
 
-const TVMAZE_GENRE_TO_CODE = {
-  Action: "act",
-  Adventure: "act",
-  "Science-Fiction": "scf",
-  Comedy: "cmy",
-  Thriller: "trl",
-  Mystery: "trl",
-  Drama: "drm",
-  Crime: "crm",
-  Horror: "hrr",
-  Anime: "ani",
-  Children: "fml",
-  Family: "fml",
-  Fantasy: "fnt",
-  Romance: "rma",
-  History: "hst",
-  War: "war",
-  Sports: "spt",
-  Music: "msc",
-  Western: "wsn",
+const GENRE_NAME_TO_CODE = {
+  action: "act",
+  adventure: "act",
+  "action & adventure": "act",
+  "sci-fi": "scf",
+  "science-fiction": "scf",
+  "sci-fi & fantasy": "scf",
+  comedy: "cmy",
+  thriller: "trl",
+  mystery: "trl",
+  "mystery & thriller": "trl",
+  drama: "drm",
+  crime: "crm",
+  horror: "hrr",
+  animation: "ani",
+  anime: "ani",
+  documentary: "doc",
+  nonfiction: "doc",
+  fantasy: "fnt",
+  romance: "rma",
+  children: "fml",
+  family: "fml",
+  "kids & family": "fml",
+  history: "hst",
+  war: "war",
+  "reality tv": "rly",
+  sports: "spt",
+  music: "msc",
+  musical: "msc",
+  western: "wsn",
 };
 
 const PROVIDER_DIRECT_SEARCH_URLS = {
@@ -190,15 +212,24 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 1200) {
 }
 
 async function detectBackend() {
+  const host = window.location.hostname || "";
+  const isGitHubPages = host.endsWith(".github.io") || host.endsWith(".pages.dev") || host.endsWith(".netlify.app") || host.endsWith(".vercel.app");
+  if (isGitHubPages) {
+    state.backendAvailable = false;
+    return null;
+  }
+
   const candidates = [];
   if (window.location.protocol.startsWith("http")) {
     candidates.push(".");
   }
-  candidates.push("http://127.0.0.1:8080", "http://127.0.0.1:8000");
+  if (window.location.protocol === "file:" || host === "127.0.0.1" || host === "localhost") {
+    candidates.push("http://127.0.0.1:8080", "http://127.0.0.1:8000");
+  }
 
   for (const base of candidates) {
     try {
-      const resp = await fetchWithTimeout(`${base}/api/config`, {}, 1100);
+      const resp = await fetchWithTimeout(`${base}/api/config`, {}, 1000);
       if (resp.ok && (resp.headers.get("content-type") || "").includes("application/json")) {
         const cfg = await resp.json();
         state.backendAvailable = true;
@@ -218,7 +249,6 @@ async function initApp() {
   let config = await detectBackend();
 
   if (!config) {
-    // Running on GitHub Pages or opened directly via file:// without Python running
     if (!state.staticSnapshot && window.STREAMPULSE_STATIC_DATA) {
       state.staticSnapshot = window.STREAMPULSE_STATIC_DATA;
     }
@@ -234,7 +264,7 @@ async function initApp() {
     let tmdbStatus = {
       configured: Boolean(state.clientTmdbKey),
       valid: false,
-      message: "Standalone / GitHub Pages Mode active. Built-in 315+ catalog + Live Universal Search enabled!",
+      message: "Standalone / GitHub Pages Mode active. Built-in 415+ catalog + Live Universal Search enabled!",
     };
     if (state.clientTmdbKey) {
       tmdbStatus = await verifyClientTmdbKey(state.clientTmdbKey);
@@ -263,10 +293,6 @@ async function initApp() {
 
   await loadProviders();
   await loadCatalog(true);
-
-  if ("serviceWorker" in navigator && window.location.protocol.startsWith("http")) {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
-  }
 }
 
 /* ============================================================================
@@ -326,21 +352,26 @@ function buildDirectProviderUrl(providerId, providerName, title, tmdbFallbackLin
   if (lower.includes("apple")) return `https://tv.apple.com/search?term=${q}`;
   if (lower.includes("max") || lower.includes("hbo")) return `https://play.max.com/search?q=${q}`;
   if (lower.includes("yle")) return `https://areena.yle.fi/haku?q=${q}`;
-  if (lower.includes("ruutu")) return `https://www.ruutu.fi/haku?q={q}`.replace("{q}", q);
+  if (lower.includes("ruutu")) return `https://www.ruutu.fi/haku?q=${q}`;
   if (lower.includes("viaplay")) return `https://viaplay.com/search?query=${q}`;
   if (lower.includes("skyshowtime")) return `https://www.skyshowtime.com/watch/search?q=${q}`;
   return tmdbFallbackLink || `https://www.justwatch.com/${state.country.toLowerCase()}/search?q=${q}`;
 }
 
-/**
- * Generate quick-launch offers for the user's selected (or top subscription) streaming services
- * when a title is discovered via live zero-key search (IMDb JSONP / TVMaze).
- */
 function buildQuickLaunchOffersForTitle(title) {
-  const targetProviders =
+  let targetProviders =
     state.selectedProviders.size > 0
       ? state.providers.filter((p) => state.selectedProviders.has(p.shortName))
       : state.providers.filter((p) => p.isSubscription).slice(0, 5);
+
+  if (!targetProviders.length) {
+    targetProviders = [
+      { id: 8, name: "Netflix", shortName: "nfx", icon: "https://images.justwatch.com/icon/207360008/s100/netflix.jpg" },
+      { id: 337, name: "Disney Plus", shortName: "dnp", icon: "https://images.justwatch.com/icon/313118777/s100/disneyplus.jpg" },
+      { id: 119, name: "Amazon Prime Video", shortName: "prv", icon: "https://images.justwatch.com/icon/322992749/s100/amazonprimevideo.jpg" },
+      { id: 323, name: "Yle Areena", shortName: "yle", icon: "https://images.justwatch.com/icon/305025798/s100/yleareena.jpg" },
+    ];
+  }
 
   const offers = targetProviders.map((p) => ({
     providerId: p.id,
@@ -362,16 +393,91 @@ function buildQuickLaunchOffersForTitle(title) {
 }
 
 /**
- * Live Zero-Key IMDb JSONP Search — works on `file://` AND `https://*.github.io` without any CORS error!
+ * 1) Live Zero-Key Apple iTunes Movie Search — sends `Access-Control-Allow-Origin: *`!
+ */
+async function searchItunesMoviesLive(query) {
+  try {
+    const resp = await fetch(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(query.trim())}&limit=18`
+    );
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return (data.results || [])
+      .filter((r) => r.kind === "feature-movie" && r.trackName)
+      .map((m) => {
+        const title = m.trackName;
+        const year = m.releaseDate ? parseInt(m.releaseDate.slice(0, 4), 10) : null;
+        const gName = m.primaryGenreName || "";
+        const gCode = GENRE_NAME_TO_CODE[gName.toLowerCase()] || "";
+        const hiResPoster = m.artworkUrl100
+          ? m.artworkUrl100.replace("100x100bb", "600x900bb")
+          : null;
+        return {
+          id: `itunes-movie-${m.trackId}`,
+          mediaType: "movie",
+          title,
+          year,
+          overview: m.longDescription || m.shortDescription || "",
+          runtime: m.trackTimeMillis ? Math.round(m.trackTimeMillis / 60000) : null,
+          ageCertification: m.contentAdvisoryRating || null,
+          poster: hiResPoster,
+          backdrop: hiResPoster,
+          imdbScore: null,
+          genres: gName ? [gName] : [],
+          genreCodes: gCode ? [gCode] : [],
+          offers: buildQuickLaunchOffersForTitle(title),
+        };
+      });
+  } catch (_e) {
+    return [];
+  }
+}
+
+/**
+ * 2) Live Zero-Key TVMaze Show Search — sends `Access-Control-Allow-Origin: *`!
+ */
+async function searchTvMazeLive(query) {
+  try {
+    const resp = await fetch(
+      `https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query.trim())}`
+    );
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return (data || []).slice(0, 12).map((entry) => {
+      const s = entry.show || {};
+      const title = s.name || "Untitled";
+      const year = s.premiered ? parseInt(s.premiered.slice(0, 4), 10) : null;
+      const rawGenres = s.genres || [];
+      const genreCodes = rawGenres
+        .map((g) => GENRE_NAME_TO_CODE[g.toLowerCase()])
+        .filter(Boolean);
+      const cleanSummary = (s.summary || "").replace(/<[^>]+>/g, "");
+      return {
+        id: `tvmaze-${s.id}`,
+        mediaType: "tv",
+        title,
+        year,
+        overview: cleanSummary,
+        runtime: s.averageRuntime || s.runtime || null,
+        poster: (s.image && (s.image.original || s.image.medium)) || null,
+        backdrop: (s.image && s.image.original) || null,
+        imdbScore: s.rating && s.rating.average ? s.rating.average : null,
+        genres: rawGenres,
+        genreCodes,
+        offers: buildQuickLaunchOffersForTitle(title),
+      };
+    });
+  } catch (_e) {
+    return [];
+  }
+}
+
+/**
+ * 3) Live Zero-Key IMDb JSONP Search — strips non-alphanumeric chars so callback is always valid JS!
  */
 function searchImdbJsonp(query) {
   return new Promise((resolve) => {
-    const clean = query
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_]/g, "_")
-      .replace(/_+/g, "_")
-      .replace(/^_|_$/g, "");
+    const clean = query.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
     if (!clean) {
       resolve([]);
       return;
@@ -387,7 +493,7 @@ function searchImdbJsonp(query) {
         cleanup();
         resolve([]);
       }
-    }, 3500);
+    }, 3000);
 
     function cleanup() {
       clearTimeout(timer);
@@ -405,10 +511,21 @@ function searchImdbJsonp(query) {
       cleanup();
       const rows = (payload && payload.d) || [];
       const items = rows
-        .filter((r) => r.qid && (r.qid === "movie" || r.qid === "tvSeries" || r.qid === "tvMiniSeries" || r.qid === "feature"))
+        .filter(
+          (r) =>
+            r.qid &&
+            (r.qid === "movie" ||
+              r.qid === "tvSeries" ||
+              r.qid === "tvMiniSeries" ||
+              r.qid === "feature")
+        )
         .map((r) => {
           const isTv = r.qid === "tvSeries" || r.qid === "tvMiniSeries";
-          const posterUrl = Array.isArray(r.i) ? r.i[0] : r.i && r.i.imageUrl ? r.i.imageUrl : null;
+          const posterUrl = Array.isArray(r.i)
+            ? r.i[0]
+            : r.i && r.i.imageUrl
+            ? r.i.imageUrl
+            : null;
           return {
             id: `imdb-${r.id}`,
             imdbId: r.id,
@@ -437,41 +554,6 @@ function searchImdbJsonp(query) {
     };
     document.head.appendChild(script);
   });
-}
-
-/**
- * Live Zero-Key TVMaze Search — has `Access-Control-Allow-Origin: *` and returns full synopses, genres, and scores!
- */
-async function searchTvMazeLive(query) {
-  try {
-    const resp = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query.trim())}`);
-    if (!resp.ok) return [];
-    const data = await resp.json();
-    return (data || []).slice(0, 10).map((entry) => {
-      const s = entry.show || {};
-      const title = s.name || "Untitled";
-      const year = s.premiered ? parseInt(s.premiered.slice(0, 4), 10) : null;
-      const rawGenres = s.genres || [];
-      const genreCodes = rawGenres.map((g) => TVMAZE_GENRE_TO_CODE[g]).filter(Boolean);
-      const cleanSummary = (s.summary || "").replace(/<[^>]+>/g, "");
-      return {
-        id: `tvmaze-${s.id}`,
-        mediaType: "tv",
-        title,
-        year,
-        overview: cleanSummary,
-        runtime: s.averageRuntime || s.runtime || null,
-        poster: (s.image && (s.image.original || s.image.medium)) || null,
-        backdrop: (s.image && s.image.original) || null,
-        imdbScore: s.rating && s.rating.average ? s.rating.average : null,
-        genres: rawGenres,
-        genreCodes,
-        offers: buildQuickLaunchOffersForTitle(title),
-      };
-    });
-  } catch (_e) {
-    return [];
-  }
 }
 
 async function fetchClientTmdbCatalog(pageNum = 1) {
@@ -594,15 +676,21 @@ async function searchOrBrowseStaticAndLive() {
       (state.staticSnapshot.catalog[state.country] || state.staticSnapshot.catalog["FI"])) ||
     [];
   const q = state.searchQuery.trim().toLowerCase();
+  const qTokens = q.split(/\s+/).filter(Boolean);
   const selectedCats = Array.from(state.selectedCategories);
   const selectedShorts = state.selectedProviders;
 
-  const filterItem = (item, ignoreProviderFilter = false) => {
+  const matchesMetadataFilters = (item, isFromLiveSearchAPI = false) => {
     if (state.mediaType !== "all" && item.mediaType !== state.mediaType) return false;
-    if (q) {
-      const hay = `${item.title} ${item.overview || ""} ${(item.genres || []).join(" ")}`.toLowerCase();
-      if (!hay.includes(q)) return false;
+
+    if (!isFromLiveSearchAPI && qTokens.length > 0) {
+      const hay = `${item.title} ${item.overview || ""} ${(item.genres || []).join(" ")}`
+        .toLowerCase()
+        .replace(/[-:]/g, " ");
+      const allMatched = qTokens.every((tok) => hay.includes(tok.replace(/[-:]/g, "")));
+      if (!allMatched) return false;
     }
+
     if (selectedCats.length > 0) {
       const codes = item.genreCodes || [];
       const names = item.genres || [];
@@ -614,12 +702,14 @@ async function searchOrBrowseStaticAndLive() {
         if (!matchesCat) return false;
       }
     }
-    if (!ignoreProviderFilter && selectedShorts.size > 0) {
+
+    if (!isFromLiveSearchAPI && selectedShorts.size > 0) {
       const hasProv = ((item.offers && item.offers.all) || []).some((o) =>
         selectedShorts.has(o.providerShortName)
       );
       if (!hasProv) return false;
     }
+
     if (state.eraRange && state.eraRange.includes("-")) {
       const [yMin, yMax] = state.eraRange.split("-").map((n) => parseInt(n, 10));
       if (yMin && (item.year || 0) < yMin) return false;
@@ -628,21 +718,26 @@ async function searchOrBrowseStaticAndLive() {
     return true;
   };
 
-  let filtered = pool.filter((item) => filterItem(item, false));
+  let filtered = pool.filter((item) => matchesMetadataFilters(item, false));
 
-  // If user typed a search query, ALSO run live browser search (IMDb JSONP + TVMaze CORS)
-  // so ANY movie or series in the world is found even in static mode!
+  // When user searches for any title, also query live CORS/JSONP APIs (IMDb + iTunes Movies + TVMaze)
   if (q.length >= 2) {
-    const [imdbResults, tvmazeResults] = await Promise.all([
+    const [imdbResults, itunesResults, tvmazeResults] = await Promise.all([
       searchImdbJsonp(q),
+      state.mediaType === "tv" ? Promise.resolve([]) : searchItunesMoviesLive(q),
       state.mediaType === "movie" ? Promise.resolve([]) : searchTvMazeLive(q),
     ]);
 
-    const seenTitles = new Set(filtered.map((x) => `${x.title.toLowerCase()}-${x.year || ""}`));
-    for (const liveItem of [...imdbResults, ...tvmazeResults]) {
-      const key = `${liveItem.title.toLowerCase()}-${liveItem.year || ""}`;
-      if (!seenTitles.has(key) && filterItem(liveItem, true)) {
-        seenTitles.add(key);
+    const seenTitles = new Set(
+      filtered.map((x) => `${(x.title || "").toLowerCase().replace(/[^a-z0-9]/g, "")}-${x.year || ""}`)
+    );
+
+    for (const liveItem of [...imdbResults, ...itunesResults, ...tvmazeResults]) {
+      const normKey = `${(liveItem.title || "").toLowerCase().replace(/[^a-z0-9]/g, "")}-${
+        liveItem.year || ""
+      }`;
+      if (!seenTitles.has(normKey) && matchesMetadataFilters(liveItem, true)) {
+        seenTitles.add(normKey);
         filtered.push(liveItem);
       }
     }
@@ -735,7 +830,10 @@ function detectCategoryFromQuery(query) {
   const matched = state.categories.find((cat) => {
     if (state.selectedCategories.has(cat.id)) return false;
     const nameMatch = cat.name.toLowerCase().includes(q);
-    const kwMatch = (cat.keywords || "").toLowerCase().split(/\s+/).some((k) => k === q || (q.length >= 4 && k.startsWith(q)));
+    const kwMatch = (cat.keywords || "")
+      .toLowerCase()
+      .split(/\s+/)
+      .some((k) => k === q || (q.length >= 4 && k.startsWith(q)));
     return nameMatch || kwMatch;
   });
 
@@ -821,7 +919,7 @@ function updateTmdbStatusUI(tmdb) {
     els.tmdbStatusText.textContent = "Setup TMDB Key";
     els.tmdbModalStatusBox.innerHTML = state.backendAvailable
       ? `⚡ <strong>Active Engine:</strong> Live JustWatch GraphQL Catalog + Direct Streaming Links (Zero-key mode). Add a free TMDB API key below to enable hybrid TMDB discovery & trailers.`
-      : `🌐 <strong>Standalone / GitHub Pages Mode Active:</strong> Using built-in 315+ multi-category catalog + Live Universal Search (IMDb & TVMaze). Paste a free <strong>TMDB API Key</strong> below to unlock full TMDB provider discovery!`;
+      : `🌐 <strong>Standalone / GitHub Pages Mode Active:</strong> Built-in 415+ catalog + Live Universal Search (IMDb, Apple iTunes & TVMaze). Paste a free <strong>TMDB API Key</strong> below to unlock full TMDB provider discovery!`;
   }
 }
 
@@ -1317,7 +1415,7 @@ function bindEvents() {
     }
   });
 
-  // Search Input with Debounce + Smart Category Detection
+  // Search Input with Debounce + Enter key + Smart Category Detection
   els.searchInput.addEventListener("input", (e) => {
     state.searchQuery = e.target.value;
     els.clearSearchBtn.classList.toggle("hidden", !state.searchQuery);
@@ -1330,7 +1428,16 @@ function bindEvents() {
     clearTimeout(searchDebounceTimer);
     searchDebounceTimer = setTimeout(() => {
       loadCatalog(true);
-    }, 320);
+    }, 280);
+  });
+
+  els.searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      clearTimeout(searchDebounceTimer);
+      state.searchQuery = els.searchInput.value;
+      loadCatalog(true);
+    }
   });
 
   els.clearSearchBtn.addEventListener("click", () => {
