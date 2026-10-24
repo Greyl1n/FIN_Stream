@@ -1070,20 +1070,401 @@ body {
 }
 
 @media (max-width: 768px) {
+  body {
+    padding-bottom: calc(74px + env(safe-area-inset-bottom, 0px));
+  }
+
   .hide-sm {
+    display: none !important;
+  }
+
+  /* Compact 2-row sticky mobile header */
+  .header-inner {
+    padding: 8px 12px;
+    gap: 8px;
+  }
+
+  .brand {
+    gap: 8px;
+    order: 1;
+  }
+
+  .brand-logo {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+  }
+
+  .brand-logo svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .brand-name {
+    font-size: 1rem;
+  }
+
+  .brand-tag {
     display: none;
   }
-  .mobile-bottom-nav {
+
+  .header-actions {
+    order: 2;
+    margin-left: auto;
+    gap: 6px;
+  }
+
+  .country-select {
+    padding: 6px 8px;
+    font-size: 0.78rem;
+    max-width: 118px;
+    text-overflow: ellipsis;
+  }
+
+  .action-pill,
+  .engine-pill {
+    padding: 6px 9px;
+    font-size: 0.75rem;
+    gap: 5px;
+  }
+
+  #tmdbStatusText {
+    display: none;
+  }
+
+  #tmdbSettingsBtn::after {
+    content: "API";
+    font-size: 0.74rem;
+    font-weight: 700;
+  }
+
+  /* Full-width search bar on Row 2 of header */
+  .search-wrapper {
+    order: 3;
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .search-category-select {
+    max-width: 108px;
+    padding: 8px 6px 8px 10px;
+    font-size: 0.76rem;
+  }
+
+  .search-icon {
+    left: 10px;
+    width: 16px;
+    height: 16px;
+  }
+
+  #searchInput {
+    padding: 8px 34px 8px 32px;
+    /* 16px prevents mobile browsers (iOS Safari / Chrome) from auto-zooming on input focus */
+    font-size: 16px;
+  }
+
+  .search-Shortcut {
+    display: none !important;
+  }
+
+  .category-suggestion {
+    left: 0;
+    right: 0;
+    font-size: 0.76rem;
+    padding: 6px 12px;
+  }
+
+  /* Main content spacing */
+  .app-main {
+    padding: 10px 10px 20px;
+  }
+
+  /* Compact touch-friendly horizontal rails for Platforms & Categories */
+  .providers-section,
+  .categories-section {
+    padding: 10px 12px;
+    margin-bottom: 10px;
+    border-radius: var(--radius-md);
+  }
+
+  .providers-header {
+    margin-bottom: 8px;
+    gap: 6px;
+  }
+
+  .section-label {
+    font-size: 0.84rem;
+  }
+
+  .section-hint {
+    display: none;
+  }
+
+  .text-btn {
+    padding: 4px 8px;
+    font-size: 0.72rem;
+  }
+
+  .providers-rail,
+  .categories-rail {
+    gap: 7px;
+    padding-bottom: 2px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .providers-rail::-webkit-scrollbar,
+  .categories-rail::-webkit-scrollbar {
+    display: none;
+  }
+
+  .provider-chip {
+    padding: 5px 10px 5px 5px;
+    border-radius: 10px;
+    gap: 6px;
+  }
+
+  .provider-chip img {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+  }
+
+  .provider-chip span {
+    font-size: 0.76rem;
+  }
+
+  .category-pill {
+    padding: 6px 11px;
+    font-size: 0.76rem;
+    gap: 5px;
+  }
+
+  .category-pill .cat-icon {
+    font-size: 0.85rem;
+  }
+
+  /* Compact 2-row Filter & Sort Bar */
+  .filters-bar {
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  #mediaTypeControl {
+    flex: 1 1 54%;
     display: flex;
   }
+
+  #monetizationControl {
+    flex: 1 1 42%;
+    display: flex;
+  }
+
+  .seg-btn {
+    flex: 1;
+    padding: 6px 6px;
+    font-size: 0.74rem;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .select-group {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+  }
+
+  .filter-select {
+    width: 100%;
+    padding: 7px 8px;
+    font-size: 0.76rem;
+    text-overflow: ellipsis;
+  }
+
+  .results-meta {
+    flex: 1 1 100%;
+    margin-left: 0;
+    font-size: 0.75rem;
+    padding: 2px 2px 0;
+  }
+
+  /* Active filter chips */
+  .active-filters {
+    padding: 8px 10px;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+
+  .filter-chip {
+    font-size: 0.72rem;
+    padding: 3px 8px;
+  }
+
+  /* Strict 2-column mobile poster grid */
   .titles-grid {
-    grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .title-card:hover {
+    transform: none;
+  }
+
+  .card-badges-top {
+    top: 7px;
+    left: 7px;
+    right: 7px;
+  }
+
+  .type-pill {
+    font-size: 0.62rem;
+    padding: 3px 6px;
+  }
+
+  .score-pill {
+    font-size: 0.66rem;
+    padding: 3px 6px;
+  }
+
+  .bookmark-btn {
+    bottom: 7px;
+    right: 7px;
+    width: 30px;
+    height: 30px;
+  }
+
+  .card-body {
+    padding: 9px 9px 10px;
+    gap: 6px;
+  }
+
+  .card-title {
+    font-size: 0.85rem;
+  }
+
+  .card-sub {
+    font-size: 0.7rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .card-offers {
+    padding-top: 6px;
+    gap: 6px;
+  }
+
+  .offer-icons-row {
+    gap: 5px;
+  }
+
+  .offer-icon-link {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+  }
+
+  .offer-icon-link:nth-child(n + 5) {
+    display: none;
+  }
+
+  .direct-launch-btn {
+    display: block;
+    padding: 7px 6px;
+    font-size: 0.72rem;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Bottom-sheet modals on mobile */
+  .modal-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .modal-card {
+    border-radius: 20px 20px 0 0;
+    max-height: 88vh;
+    border-bottom: none;
+  }
+
+  .settings-modal-card {
+    padding: 20px 16px 28px;
+  }
+
+  .modal-close-btn {
+    top: 12px;
+    right: 12px;
+    width: 36px;
+    height: 36px;
+    background: rgba(11, 15, 25, 0.9);
+  }
+
+  .detail-hero {
+    min-height: 175px;
+    padding: 16px;
+  }
+
+  .detail-hero-inner {
     gap: 12px;
+    align-items: flex-end;
   }
+
   .detail-poster {
-    width: 88px;
+    width: 78px;
+    border-radius: 8px;
   }
+
   .detail-title {
-    font-size: 1.2rem;
+    font-size: 1.15rem;
+  }
+
+  .detail-meta-row {
+    font-size: 0.76rem;
+    gap: 6px;
+  }
+
+  .detail-body {
+    padding: 0 16px 24px;
+  }
+
+  .detail-overview {
+    font-size: 0.86rem;
+    margin-bottom: 16px;
+  }
+
+  .offers-list-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .input-row {
+    flex-direction: column;
+  }
+
+  /* Mobile bottom navigation with safe-area padding */
+  .mobile-bottom-nav {
+    display: flex;
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .mob-nav-btn {
+    flex: 1;
+    padding: 6px 4px;
+    font-size: 0.68rem;
+  }
+}
+
+@media (max-width: 390px) {
+  .search-category-select {
+    max-width: 92px;
+    font-size: 0.72rem;
+  }
+
+  #mediaTypeControl,
+  #monetizationControl {
+    flex: 1 1 100%;
   }
 }
