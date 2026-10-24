@@ -1,8 +1,11 @@
 /**
  * StreamPulse Frontend Application (Desktop & Mobile PWA)
- * Works seamlessly in TWO modes:
- * 1. Python FastAPI Backend Mode (when running `python app.py` locally)
- * 2. GitHub Pages Serverless Static Mode (uses built-in catalog snapshot + 100% client-side TMDB API directly in the browser!)
+ * Works seamlessly across ALL environments:
+ * 1. Local Python Backend (`python app.py` at http://127.0.0.1:8080 or even when opening index.html via file:// while app.py is running)
+ * 2. GitHub Pages & Standalone `index.html` (Zero-Server Mode):
+ *    - Pre-loaded 315+ multi-category catalog via `static/catalog_data.js` (works on file:// and https://*.github.io)
+ *    - Live Zero-Key Universal Search via IMDb JSONP + TVMaze CORS APIs when searching any title outside the snapshot
+ *    - Full Client-Side Live TMDB API Mode when a user adds a free TMDB API key
  */
 
 const TMDB_API_BASE = "https://api.themoviedb.org/3";
@@ -72,6 +75,28 @@ const TMDB_ID_TO_GENRE_NAME = {
   37: "Western",
 };
 
+const TVMAZE_GENRE_TO_CODE = {
+  Action: "act",
+  Adventure: "act",
+  "Science-Fiction": "scf",
+  Comedy: "cmy",
+  Thriller: "trl",
+  Mystery: "trl",
+  Drama: "drm",
+  Crime: "crm",
+  Horror: "hrr",
+  Anime: "ani",
+  Children: "fml",
+  Family: "fml",
+  Fantasy: "fnt",
+  Romance: "rma",
+  History: "hst",
+  War: "war",
+  Sports: "spt",
+  Music: "msc",
+  Western: "wsn",
+};
+
 const PROVIDER_DIRECT_SEARCH_URLS = {
   8: "https://www.netflix.com/search?q={q}",
   337: "https://www.disneyplus.com/search?q={q}",
@@ -91,8 +116,9 @@ const PROVIDER_DIRECT_SEARCH_URLS = {
 };
 
 const state = {
-  backendAvailable: true,
-  staticSnapshot: null,
+  backendAvailable: false,
+  apiBase: ".",
+  staticSnapshot: window.STREAMPULSE_STATIC_DATA || null,
   clientTmdbKey: localStorage.getItem("streampulse_tmdb_key") || "",
   country: localStorage.getItem("streampulse_country") || "FI",
   providers: [],
@@ -150,44 +176,78 @@ const els = {
 
 let searchDebounceTimer = null;
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 1200) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return resp;
+  } catch (err) {
+    clearTimeout(id);
+    throw err;
+  }
+}
+
+async function detectBackend() {
+  const candidates = [];
+  if (window.location.protocol.startsWith("http")) {
+    candidates.push(".");
+  }
+  candidates.push("http://127.0.0.1:8080", "http://127.0.0.1:8000");
+
+  for (const base of candidates) {
+    try {
+      const resp = await fetchWithTimeout(`${base}/api/config`, {}, 1100);
+      if (resp.ok && (resp.headers.get("content-type") || "").includes("application/json")) {
+        const cfg = await resp.json();
+        state.backendAvailable = true;
+        state.apiBase = base;
+        return cfg;
+      }
+    } catch (_e) {}
+  }
+  state.backendAvailable = false;
+  return null;
+}
+
 async function initApp() {
   updateWatchlistBadge();
   bindEvents();
 
-  let config = null;
-  try {
-    const configResp = await fetch("./api/config");
-    if (configResp.ok && (configResp.headers.get("content-type") || "").includes("application/json")) {
-      config = await configResp.json();
-      state.backendAvailable = true;
-    } else {
-      state.backendAvailable = false;
-    }
-  } catch (_err) {
-    state.backendAvailable = false;
-  }
+  let config = await detectBackend();
 
-  if (!state.backendAvailable) {
-    // Running on GitHub Pages (Static Serverless Mode)
-    const snapResp = await fetch("./static/fallback_catalog.json");
-    state.staticSnapshot = await snapResp.json();
+  if (!config) {
+    // Running on GitHub Pages or opened directly via file:// without Python running
+    if (!state.staticSnapshot && window.STREAMPULSE_STATIC_DATA) {
+      state.staticSnapshot = window.STREAMPULSE_STATIC_DATA;
+    }
+    if (!state.staticSnapshot) {
+      try {
+        const snapResp = await fetch("./static/fallback_catalog.json");
+        state.staticSnapshot = await snapResp.json();
+      } catch (_e) {
+        state.staticSnapshot = { countries: [{ code: "FI", name: "Finland", flag: "🇫🇮" }], categories: [], providers: {}, catalog: {} };
+      }
+    }
+
     let tmdbStatus = {
       configured: Boolean(state.clientTmdbKey),
       valid: false,
-      message: "GitHub Pages Mode active. Add a free TMDB API key for live unlimited search & discovery across all regions.",
+      message: "Standalone / GitHub Pages Mode active. Built-in 315+ catalog + Live Universal Search enabled!",
     };
     if (state.clientTmdbKey) {
       tmdbStatus = await verifyClientTmdbKey(state.clientTmdbKey);
     }
     config = {
-      countries: state.staticSnapshot.countries,
-      categories: state.staticSnapshot.categories,
+      countries: state.staticSnapshot.countries || [],
+      categories: state.staticSnapshot.categories || [],
       tmdb: tmdbStatus,
     };
   }
 
   // Populate Countries
-  els.countrySelect.innerHTML = config.countries
+  els.countrySelect.innerHTML = (config.countries || [])
     .map(
       (c) =>
         `<option value="${c.code}" ${c.code === state.country ? "selected" : ""}>${c.flag} ${c.name} (${c.code})</option>`
@@ -204,13 +264,13 @@ async function initApp() {
   await loadProviders();
   await loadCatalog(true);
 
-  if ("serviceWorker" in navigator) {
+  if ("serviceWorker" in navigator && window.location.protocol.startsWith("http")) {
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   }
 }
 
 /* ============================================================================
-   Client-Side TMDB API Helpers (for GitHub Pages Serverless Mode)
+   Client-Side Live Search & TMDB Helpers (for GitHub Pages & Standalone index.html)
    ============================================================================ */
 function buildTmdbFetchArgs(endpoint, extraParams = {}) {
   const url = new URL(`${TMDB_API_BASE}${endpoint}`);
@@ -233,7 +293,7 @@ async function verifyClientTmdbKey(candidateKey) {
   const prev = state.clientTmdbKey;
   state.clientTmdbKey = (candidateKey || "").trim();
   if (!state.clientTmdbKey) {
-    return { valid: false, configured: false, message: "TMDB API key cleared. Using built-in GitHub Pages catalog snapshot." };
+    return { valid: false, configured: false, message: "TMDB API key cleared. Using built-in catalog + Live Zero-Key Search." };
   }
   try {
     const { url, headers } = buildTmdbFetchArgs("/configuration");
@@ -242,7 +302,7 @@ async function verifyClientTmdbKey(candidateKey) {
       return {
         valid: true,
         configured: true,
-        message: "Live Client-Side TMDB API active on GitHub Pages!",
+        message: "Live Client-Side TMDB API active!",
         maskedKey: `${state.clientTmdbKey.slice(0, 4)}...${state.clientTmdbKey.slice(-4)}`,
       };
     }
@@ -266,10 +326,152 @@ function buildDirectProviderUrl(providerId, providerName, title, tmdbFallbackLin
   if (lower.includes("apple")) return `https://tv.apple.com/search?term=${q}`;
   if (lower.includes("max") || lower.includes("hbo")) return `https://play.max.com/search?q=${q}`;
   if (lower.includes("yle")) return `https://areena.yle.fi/haku?q=${q}`;
-  if (lower.includes("ruutu")) return `https://www.ruutu.fi/haku?q=${q}`;
+  if (lower.includes("ruutu")) return `https://www.ruutu.fi/haku?q={q}`.replace("{q}", q);
   if (lower.includes("viaplay")) return `https://viaplay.com/search?query=${q}`;
   if (lower.includes("skyshowtime")) return `https://www.skyshowtime.com/watch/search?q=${q}`;
-  return tmdbFallbackLink || `https://www.google.com/search?q=${encodeURIComponent("Watch " + title + " on " + providerName)}`;
+  return tmdbFallbackLink || `https://www.justwatch.com/${state.country.toLowerCase()}/search?q=${q}`;
+}
+
+/**
+ * Generate quick-launch offers for the user's selected (or top subscription) streaming services
+ * when a title is discovered via live zero-key search (IMDb JSONP / TVMaze).
+ */
+function buildQuickLaunchOffersForTitle(title) {
+  const targetProviders =
+    state.selectedProviders.size > 0
+      ? state.providers.filter((p) => state.selectedProviders.has(p.shortName))
+      : state.providers.filter((p) => p.isSubscription).slice(0, 5);
+
+  const offers = targetProviders.map((p) => ({
+    providerId: p.id,
+    providerName: p.name,
+    providerShortName: p.shortName,
+    icon: p.icon,
+    monetizationType: "FLATRATE",
+    category: "stream",
+    quality: "HD",
+    url: buildDirectProviderUrl(p.id, p.name, title, ""),
+  }));
+
+  return {
+    all: offers,
+    stream: offers,
+    rent: [],
+    buy: [],
+  };
+}
+
+/**
+ * Live Zero-Key IMDb JSONP Search — works on `file://` AND `https://*.github.io` without any CORS error!
+ */
+function searchImdbJsonp(query) {
+  return new Promise((resolve) => {
+    const clean = query
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, "_")
+      .replace(/_+/g, "_")
+      .replace(/^_|_$/g, "");
+    if (!clean) {
+      resolve([]);
+      return;
+    }
+    const firstChar = clean[0] || "a";
+    const callbackName = `imdb$${clean}`;
+    const script = document.createElement("script");
+    let finished = false;
+
+    const timer = setTimeout(() => {
+      if (!finished) {
+        finished = true;
+        cleanup();
+        resolve([]);
+      }
+    }, 3500);
+
+    function cleanup() {
+      clearTimeout(timer);
+      try {
+        delete window[callbackName];
+      } catch (_e) {
+        window[callbackName] = undefined;
+      }
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
+
+    window[callbackName] = (payload) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      const rows = (payload && payload.d) || [];
+      const items = rows
+        .filter((r) => r.qid && (r.qid === "movie" || r.qid === "tvSeries" || r.qid === "tvMiniSeries" || r.qid === "feature"))
+        .map((r) => {
+          const isTv = r.qid === "tvSeries" || r.qid === "tvMiniSeries";
+          const posterUrl = Array.isArray(r.i) ? r.i[0] : r.i && r.i.imageUrl ? r.i.imageUrl : null;
+          return {
+            id: `imdb-${r.id}`,
+            imdbId: r.id,
+            mediaType: isTv ? "tv" : "movie",
+            title: r.l || "Untitled",
+            year: r.y || null,
+            overview: r.s ? `Starring: ${r.s}` : "",
+            poster: posterUrl,
+            backdrop: posterUrl,
+            imdbScore: null,
+            genres: [],
+            genreCodes: [],
+            offers: buildQuickLaunchOffersForTitle(r.l || ""),
+          };
+        });
+      resolve(items);
+    };
+
+    script.src = `https://v2.sg.media-imdb.com/suggests/${firstChar}/${clean}.json`;
+    script.onerror = () => {
+      if (!finished) {
+        finished = true;
+        cleanup();
+        resolve([]);
+      }
+    };
+    document.head.appendChild(script);
+  });
+}
+
+/**
+ * Live Zero-Key TVMaze Search — has `Access-Control-Allow-Origin: *` and returns full synopses, genres, and scores!
+ */
+async function searchTvMazeLive(query) {
+  try {
+    const resp = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query.trim())}`);
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return (data || []).slice(0, 10).map((entry) => {
+      const s = entry.show || {};
+      const title = s.name || "Untitled";
+      const year = s.premiered ? parseInt(s.premiered.slice(0, 4), 10) : null;
+      const rawGenres = s.genres || [];
+      const genreCodes = rawGenres.map((g) => TVMAZE_GENRE_TO_CODE[g]).filter(Boolean);
+      const cleanSummary = (s.summary || "").replace(/<[^>]+>/g, "");
+      return {
+        id: `tvmaze-${s.id}`,
+        mediaType: "tv",
+        title,
+        year,
+        overview: cleanSummary,
+        runtime: s.averageRuntime || s.runtime || null,
+        poster: (s.image && (s.image.original || s.image.medium)) || null,
+        backdrop: (s.image && s.image.original) || null,
+        imdbScore: s.rating && s.rating.average ? s.rating.average : null,
+        genres: rawGenres,
+        genreCodes,
+        offers: buildQuickLaunchOffersForTitle(title),
+      };
+    });
+  } catch (_e) {
+    return [];
+  }
 }
 
 async function fetchClientTmdbCatalog(pageNum = 1) {
@@ -319,7 +521,6 @@ async function fetchClientTmdbCatalog(pageNum = 1) {
     .filter((r) => (r.media_type || targetType) === "movie" || (r.media_type || targetType) === "tv")
     .slice(0, 18);
 
-  // Fetch watch providers in parallel for each title
   const items = await Promise.all(
     rawResults.map(async (r) => {
       const mType = r.media_type || targetType;
@@ -386,7 +587,7 @@ async function fetchClientTmdbCatalog(pageNum = 1) {
   };
 }
 
-function filterStaticSnapshotCatalog() {
+async function searchOrBrowseStaticAndLive() {
   const pool =
     (state.staticSnapshot &&
       state.staticSnapshot.catalog &&
@@ -396,7 +597,7 @@ function filterStaticSnapshotCatalog() {
   const selectedCats = Array.from(state.selectedCategories);
   const selectedShorts = state.selectedProviders;
 
-  let filtered = pool.filter((item) => {
+  const filterItem = (item, ignoreProviderFilter = false) => {
     if (state.mediaType !== "all" && item.mediaType !== state.mediaType) return false;
     if (q) {
       const hay = `${item.title} ${item.overview || ""} ${(item.genres || []).join(" ")}`.toLowerCase();
@@ -405,13 +606,15 @@ function filterStaticSnapshotCatalog() {
     if (selectedCats.length > 0) {
       const codes = item.genreCodes || [];
       const names = item.genres || [];
-      const matchesCat = selectedCats.some((cId) => {
-        const catObj = state.categories.find((c) => c.id === cId);
-        return codes.includes(cId) || (catObj && names.includes(catObj.name));
-      });
-      if (!matchesCat) return false;
+      if (codes.length > 0 || names.length > 0) {
+        const matchesCat = selectedCats.some((cId) => {
+          const catObj = state.categories.find((c) => c.id === cId);
+          return codes.includes(cId) || (catObj && names.includes(catObj.name));
+        });
+        if (!matchesCat) return false;
+      }
     }
-    if (selectedShorts.size > 0) {
+    if (!ignoreProviderFilter && selectedShorts.size > 0) {
       const hasProv = ((item.offers && item.offers.all) || []).some((o) =>
         selectedShorts.has(o.providerShortName)
       );
@@ -423,7 +626,27 @@ function filterStaticSnapshotCatalog() {
       if (yMax && (item.year || 9999) > yMax) return false;
     }
     return true;
-  });
+  };
+
+  let filtered = pool.filter((item) => filterItem(item, false));
+
+  // If user typed a search query, ALSO run live browser search (IMDb JSONP + TVMaze CORS)
+  // so ANY movie or series in the world is found even in static mode!
+  if (q.length >= 2) {
+    const [imdbResults, tvmazeResults] = await Promise.all([
+      searchImdbJsonp(q),
+      state.mediaType === "movie" ? Promise.resolve([]) : searchTvMazeLive(q),
+    ]);
+
+    const seenTitles = new Set(filtered.map((x) => `${x.title.toLowerCase()}-${x.year || ""}`));
+    for (const liveItem of [...imdbResults, ...tvmazeResults]) {
+      const key = `${liveItem.title.toLowerCase()}-${liveItem.year || ""}`;
+      if (!seenTitles.has(key) && filterItem(liveItem, true)) {
+        seenTitles.add(key);
+        filtered.push(liveItem);
+      }
+    }
+  }
 
   if (state.sortBy === "IMDB_SCORE") {
     filtered.sort((a, b) => (b.imdbScore || b.tmdbScore || 0) - (a.imdbScore || a.tmdbScore || 0));
@@ -598,7 +821,7 @@ function updateTmdbStatusUI(tmdb) {
     els.tmdbStatusText.textContent = "Setup TMDB Key";
     els.tmdbModalStatusBox.innerHTML = state.backendAvailable
       ? `⚡ <strong>Active Engine:</strong> Live JustWatch GraphQL Catalog + Direct Streaming Links (Zero-key mode). Add a free TMDB API key below to enable hybrid TMDB discovery & trailers.`
-      : `🌐 <strong>GitHub Pages Static Mode Active:</strong> Browsing pre-loaded streaming catalog snapshot. Paste a free <strong>TMDB API Key</strong> below to unlock live, real-time client-side search & discovery across all streaming providers!`;
+      : `🌐 <strong>Standalone / GitHub Pages Mode Active:</strong> Using built-in 315+ multi-category catalog + Live Universal Search (IMDb & TVMaze). Paste a free <strong>TMDB API Key</strong> below to unlock full TMDB provider discovery!`;
   }
 }
 
@@ -606,7 +829,7 @@ async function loadProviders() {
   els.providersRail.innerHTML = `<div style="color:var(--text-secondary);font-size:0.84rem;padding:6px;">Loading streaming platforms...</div>`;
   try {
     if (state.backendAvailable) {
-      const resp = await fetch(`./api/providers?country=${encodeURIComponent(state.country)}`);
+      const resp = await fetch(`${state.apiBase}/api/providers?country=${encodeURIComponent(state.country)}`);
       const data = await resp.json();
       state.providers = data.providers || [];
     } else if (state.clientTmdbKey && state.tmdbStatus.valid) {
@@ -705,13 +928,13 @@ async function loadCatalog(reset = true) {
       if (!reset && state.nextCursor) {
         params.set("after", state.nextCursor);
       }
-      const resp = await fetch(`./api/catalog?${params.toString()}`);
+      const resp = await fetch(`${state.apiBase}/api/catalog?${params.toString()}`);
       data = await resp.json();
     } else if (state.clientTmdbKey && state.tmdbStatus.valid) {
       const pageNum = !reset && state.nextCursor ? parseInt(state.nextCursor, 10) : 1;
       data = await fetchClientTmdbCatalog(pageNum);
     } else {
-      data = filterStaticSnapshotCatalog();
+      data = await searchOrBrowseStaticAndLive();
     }
 
     const newItems = data.items || [];
@@ -873,7 +1096,7 @@ async function openTitleDetail(nodeId, tmdbId, mediaType) {
         media_type: mediaType || "movie",
       });
       if (tmdbId) params.set("tmdb_id", tmdbId);
-      const resp = await fetch(`./api/title/${encodeURIComponent(nodeId)}?${params.toString()}`);
+      const resp = await fetch(`${state.apiBase}/api/title/${encodeURIComponent(nodeId)}?${params.toString()}`);
       d = await resp.json();
     } else {
       d = state.items.find((x) => x.id === nodeId) || state.watchlist[nodeId] || {};
@@ -1280,14 +1503,14 @@ function bindEvents() {
     if (e.target === els.tmdbModal) els.tmdbModal.classList.add("hidden");
   });
 
-  // Save & Verify TMDB API Key (works both with local backend and client-side on GitHub Pages!)
+  // Save & Verify TMDB API Key
   els.tmdbKeyForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const keyVal = els.tmdbKeyInput.value.trim();
     els.tmdbModalStatusBox.textContent = "Verifying TMDB API key...";
     let result = null;
     if (state.backendAvailable) {
-      const resp = await fetch("./api/settings/tmdb", {
+      const resp = await fetch(`${state.apiBase}/api/settings/tmdb`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ api_key: keyVal }),
