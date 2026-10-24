@@ -18,23 +18,25 @@
 
 ---
 
-## 🚀 Deploying to GitHub Pages
+## 🌐 Why `app.py` Works Better Than Pure GitHub Pages (And How to Share Online)
 
-The repository is structured with [`index.html`](./index.html), [`manifest.json`](./manifest.json), [`sw.js`](./sw.js), and [`.nojekyll`](./.nojekyll) in the **project root** so GitHub Pages can host it directly without a build step:
+When you run `python app.py` on your PC, the Python server queries JustWatch's live GraphQL API (`https://apis.justwatch.com/graphql`) from the backend.
+- **Browser CORS Limitation on GitHub Pages:** JustWatch's server sets `Access-Control-Allow-Origin: https://www.justwatch.com`, which means web browsers block static websites (like `https://<username>.github.io`) from querying JustWatch's live GraphQL API directly from browser JavaScript.
+- Because **GitHub Pages only serves static files and cannot run Python (`app.py`)**, you have **two ways** to get full live search + real streaming platform availability when sharing the app online:
 
-1. Push this folder to a GitHub repository:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit: StreamPulse streaming search & catalog app"
-   git branch -M main
-   git remote add origin https://github.com/<your-username>/<your-repo>.git
-   git push -u origin main
-   ```
-2. On GitHub, go to **Settings** → **Pages**.
-3. Under **Build and deployment**, select **Deploy from a branch**, choose **`main`** and **`/ (root)`**, and click **Save**.
-4. Your app will be live at `https://<your-username>.github.io/<your-repo>/`!
-   - Visitors can immediately browse and filter the built-in catalog snapshot or click **Setup TMDB Key** in the top-right corner to enter a free TMDB API key for live client-side search across all regions.
+### Option A (Best — Identical to `app.py`, Zero API Keys Needed): Deploy `app.py` Free on Render.com
+This repository includes a [`render.yaml`](./render.yaml) blueprint so you can host the live Python `app.py` server for free:
+1. Push this repository to GitHub.
+2. Sign in to [render.com](https://render.com) (Free) with your GitHub account.
+3. Click **New +** → **Web Service** → select your GitHub repository.
+4. Render automatically detects `requirements.txt` and starts `uvicorn app:app --host 0.0.0.0 --port $PORT`.
+5. You get a public URL (`https://your-app.onrender.com`) that runs `app.py` 24/7 with the exact same live search, categories, and direct streaming links as on your PC!
+
+### Option B (Static GitHub Pages + Free TMDB API Key)
+Unlike JustWatch, **TMDB's API (`https://api.themoviedb.org/3`) allows direct browser requests (`Access-Control-Allow-Origin: *`)**:
+1. Host [`index.html`](./index.html) on GitHub Pages (**Settings** → **Pages** → **Deploy from branch `main` `/ (root)`**).
+2. Open your GitHub Pages URL, click **Setup TMDB Key** in the top-right corner, and paste a free TMDB API Key from [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api).
+3. With a TMDB key active, the browser queries TMDB's live `/search`, `/discover`, and `/watch/providers` endpoints directly from GitHub Pages!
 
 ### Updating the Static Catalog Snapshot (Optional)
 To refresh the built-in zero-key snapshot ([`static/fallback_catalog.json`](./static/fallback_catalog.json)) before pushing to GitHub Pages, run:

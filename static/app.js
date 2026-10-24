@@ -1,25 +1,22 @@
 /**
  * StreamPulse Frontend Application (Desktop & Mobile PWA)
- * Works seamlessly across ALL environments:
- * 1. Local Python Backend (`python app.py` at http://127.0.0.1:8080)
- * 2. GitHub Pages & Standalone `index.html` (Zero-Server Mode):
- *    - Built-in 415+ multi-category catalog (`window.STREAMPULSE_STATIC_DATA`)
- *    - Live Zero-Key Universal Search combining:
- *        a) Apple iTunes Movie Search API (CORS `*`, full synopses, posters, genres, runtime)
- *        b) TVMaze Series Search API (CORS `*`, full synopses, posters, genres, ratings)
- *        c) IMDb Live JSONP Search (`v2.sg.media-imdb.com`, universal movie & TV lookup)
- *    - Full Client-Side Live TMDB API Mode when a user adds a free TMDB API key
+ * Powered by TMDB API v3 + JustWatch Direct-Link Catalog.
+ * Works 100% live on GitHub Pages (client-side TMDB API) AND locally via `python app.py`.
  */
 
-// Actively unregister any legacy service workers so stale caches never block search updates
+// Actively unregister any legacy service workers so stale caches never block updates
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.getRegistrations().then((regs) => {
-    for (const reg of regs) {
-      reg.unregister().catch(() => {});
-    }
-  }).catch(() => {});
+  navigator.serviceWorker
+    .getRegistrations()
+    .then((regs) => {
+      for (const reg of regs) {
+        reg.unregister().catch(() => {});
+      }
+    })
+    .catch(() => {});
 }
 
+const DEFAULT_TMDB_API_KEY = "596395204d6b71ecf4dda2988e7e4226";
 const TMDB_API_BASE = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
 
@@ -87,36 +84,29 @@ const TMDB_ID_TO_GENRE_NAME = {
   37: "Western",
 };
 
-const GENRE_NAME_TO_CODE = {
-  action: "act",
-  adventure: "act",
-  "action & adventure": "act",
-  "sci-fi": "scf",
-  "science-fiction": "scf",
-  "sci-fi & fantasy": "scf",
-  comedy: "cmy",
-  thriller: "trl",
-  mystery: "trl",
-  "mystery & thriller": "trl",
-  drama: "drm",
-  crime: "crm",
-  horror: "hrr",
-  animation: "ani",
-  anime: "ani",
-  documentary: "doc",
-  nonfiction: "doc",
-  fantasy: "fnt",
-  romance: "rma",
-  children: "fml",
-  family: "fml",
-  "kids & family": "fml",
-  history: "hst",
-  war: "war",
-  "reality tv": "rly",
-  sports: "spt",
-  music: "msc",
-  musical: "msc",
-  western: "wsn",
+const TMDB_ID_TO_JW_CODE = {
+  28: "act",
+  12: "act",
+  10759: "act",
+  16: "ani",
+  35: "cmy",
+  80: "crm",
+  99: "doc",
+  18: "drm",
+  10751: "fml",
+  14: "fnt",
+  10765: "scf",
+  36: "hst",
+  27: "hrr",
+  10402: "msc",
+  9648: "trl",
+  10749: "rma",
+  878: "scf",
+  53: "trl",
+  10752: "war",
+  10768: "war",
+  10764: "rly",
+  37: "wsn",
 };
 
 const PROVIDER_DIRECT_SEARCH_URLS = {
@@ -135,13 +125,17 @@ const PROVIDER_DIRECT_SEARCH_URLS = {
   283: "https://www.crunchyroll.com/search?q={q}",
   531: "https://www.paramountplus.com/search/?q={q}",
   15: "https://www.hulu.com/search?q={q}",
+  423: "https://blockbuster.fi/search?q={q}",
+  426: "https://www.sfanytime.com/fi/search?q={q}",
+  35: "https://www.rakuten.tv/fi/search?q={q}",
+  540: "https://elisaviihde.fi/haku?q={q}",
 };
 
 const state = {
   backendAvailable: false,
   apiBase: ".",
   staticSnapshot: window.STREAMPULSE_STATIC_DATA || null,
-  clientTmdbKey: localStorage.getItem("streampulse_tmdb_key") || "",
+  clientTmdbKey: localStorage.getItem("streampulse_tmdb_key") || DEFAULT_TMDB_API_KEY,
   country: localStorage.getItem("streampulse_country") || "FI",
   providers: [],
   categories: [],
@@ -157,7 +151,8 @@ const state = {
   items: [],
   watchlist: JSON.parse(localStorage.getItem("streampulse_watchlist") || "{}"),
   showingWatchlist: false,
-  tmdbStatus: { configured: false, valid: false, message: "" },
+  tmdbStatus: { configured: true, valid: true, message: "TMDB API Connected" },
+  jwExactUrlIndex: {},
 };
 
 const els = {
@@ -198,7 +193,21 @@ const els = {
 
 let searchDebounceTimer = null;
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = 1200) {
+function buildJustWatchDirectLinkIndex() {
+  if (!state.staticSnapshot || !state.staticSnapshot.catalog) return;
+  const idx = {};
+  for (const [countryCode, items] of Object.entries(state.staticSnapshot.catalog)) {
+    for (const item of items || []) {
+      if (item.tmdbId) {
+        const key = `${countryCode}:${item.mediaType}:${item.tmdbId}`;
+        idx[key] = item;
+      }
+    }
+  }
+  state.jwExactUrlIndex = idx;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 1000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -213,7 +222,11 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 1200) {
 
 async function detectBackend() {
   const host = window.location.hostname || "";
-  const isGitHubPages = host.endsWith(".github.io") || host.endsWith(".pages.dev") || host.endsWith(".netlify.app") || host.endsWith(".vercel.app");
+  const isGitHubPages =
+    host.endsWith(".github.io") ||
+    host.endsWith(".pages.dev") ||
+    host.endsWith(".netlify.app") ||
+    host.endsWith(".vercel.app");
   if (isGitHubPages) {
     state.backendAvailable = false;
     return null;
@@ -229,7 +242,7 @@ async function detectBackend() {
 
   for (const base of candidates) {
     try {
-      const resp = await fetchWithTimeout(`${base}/api/config`, {}, 1000);
+      const resp = await fetchWithTimeout(`${base}/api/config`, {}, 900);
       if (resp.ok && (resp.headers.get("content-type") || "").includes("application/json")) {
         const cfg = await resp.json();
         state.backendAvailable = true;
@@ -243,6 +256,7 @@ async function detectBackend() {
 }
 
 async function initApp() {
+  buildJustWatchDirectLinkIndex();
   updateWatchlistBadge();
   bindEvents();
 
@@ -251,27 +265,20 @@ async function initApp() {
   if (!config) {
     if (!state.staticSnapshot && window.STREAMPULSE_STATIC_DATA) {
       state.staticSnapshot = window.STREAMPULSE_STATIC_DATA;
+      buildJustWatchDirectLinkIndex();
     }
-    if (!state.staticSnapshot) {
-      try {
-        const snapResp = await fetch("./static/fallback_catalog.json");
-        state.staticSnapshot = await snapResp.json();
-      } catch (_e) {
-        state.staticSnapshot = { countries: [{ code: "FI", name: "Finland", flag: "🇫🇮" }], categories: [], providers: {}, catalog: {} };
-      }
-    }
-
-    let tmdbStatus = {
-      configured: Boolean(state.clientTmdbKey),
-      valid: false,
-      message: "Standalone / GitHub Pages Mode active. Built-in 415+ catalog + Live Universal Search enabled!",
-    };
-    if (state.clientTmdbKey) {
-      tmdbStatus = await verifyClientTmdbKey(state.clientTmdbKey);
-    }
+    const tmdbStatus = await verifyClientTmdbKey(state.clientTmdbKey || DEFAULT_TMDB_API_KEY);
     config = {
-      countries: state.staticSnapshot.countries || [],
-      categories: state.staticSnapshot.categories || [],
+      countries: (state.staticSnapshot && state.staticSnapshot.countries) || [
+        { code: "FI", name: "Finland", flag: "🇫🇮" },
+        { code: "US", name: "United States", flag: "🇺🇸" },
+        { code: "GB", name: "United Kingdom", flag: "🇬🇧" },
+        { code: "SE", name: "Sweden", flag: "🇸🇪" },
+        { code: "NO", name: "Norway", flag: "🇳🇴" },
+        { code: "DK", name: "Denmark", flag: "🇩🇰" },
+        { code: "DE", name: "Germany", flag: "🇩🇪" },
+      ],
+      categories: (state.staticSnapshot && state.staticSnapshot.categories) || [],
       tmdb: tmdbStatus,
     };
   }
@@ -296,12 +303,12 @@ async function initApp() {
 }
 
 /* ============================================================================
-   Client-Side Live Search & TMDB Helpers (for GitHub Pages & Standalone index.html)
+   Client-Side Live TMDB Engine (Powers GitHub Pages & Standalone index.html)
    ============================================================================ */
 function buildTmdbFetchArgs(endpoint, extraParams = {}) {
   const url = new URL(`${TMDB_API_BASE}${endpoint}`);
   const headers = { Accept: "application/json" };
-  const key = (state.clientTmdbKey || "").trim();
+  const key = (state.clientTmdbKey || DEFAULT_TMDB_API_KEY).trim();
   if (key.startsWith("eyJ") || key.length > 45) {
     headers["Authorization"] = `Bearer ${key}`;
   } else if (key) {
@@ -317,10 +324,7 @@ function buildTmdbFetchArgs(endpoint, extraParams = {}) {
 
 async function verifyClientTmdbKey(candidateKey) {
   const prev = state.clientTmdbKey;
-  state.clientTmdbKey = (candidateKey || "").trim();
-  if (!state.clientTmdbKey) {
-    return { valid: false, configured: false, message: "TMDB API key cleared. Using built-in catalog + Live Zero-Key Search." };
-  }
+  state.clientTmdbKey = (candidateKey || DEFAULT_TMDB_API_KEY).trim();
   try {
     const { url, headers } = buildTmdbFetchArgs("/configuration");
     const resp = await fetch(url, { headers });
@@ -328,19 +332,29 @@ async function verifyClientTmdbKey(candidateKey) {
       return {
         valid: true,
         configured: true,
-        message: "Live Client-Side TMDB API active!",
+        message: "Live TMDB API + Watch Providers active!",
         maskedKey: `${state.clientTmdbKey.slice(0, 4)}...${state.clientTmdbKey.slice(-4)}`,
       };
     }
     state.clientTmdbKey = prev;
-    return { valid: false, configured: true, message: "Invalid TMDB API key or Read Access Token." };
+    return { valid: false, configured: true, message: "Invalid TMDB API key." };
   } catch (err) {
     state.clientTmdbKey = prev;
     return { valid: false, configured: true, message: `Network error verifying TMDB key: ${err.message}` };
   }
 }
 
-function buildDirectProviderUrl(providerId, providerName, title, tmdbFallbackLink) {
+function buildDirectProviderUrl(providerId, providerName, title, tmdbFallbackLink, tmdbId, mediaType) {
+  // 1) Check if our JustWatch index has the exact direct URL for this (country, mediaType, tmdbId, providerId)
+  if (tmdbId) {
+    const jwItem = state.jwExactUrlIndex[`${state.country}:${mediaType}:${tmdbId}`];
+    if (jwItem && jwItem.offers && jwItem.offers.all) {
+      const exactOffer = jwItem.offers.all.find((o) => Number(o.providerId) === Number(providerId) && o.url);
+      if (exactOffer) return exactOffer.url;
+    }
+  }
+
+  // 2) Construct direct platform search/launch URL on that streaming service
   const q = encodeURIComponent(title || "");
   if (PROVIDER_DIRECT_SEARCH_URLS[providerId]) {
     return PROVIDER_DIRECT_SEARCH_URLS[providerId].replace("{q}", q);
@@ -358,404 +372,272 @@ function buildDirectProviderUrl(providerId, providerName, title, tmdbFallbackLin
   return tmdbFallbackLink || `https://www.justwatch.com/${state.country.toLowerCase()}/search?q=${q}`;
 }
 
-function buildQuickLaunchOffersForTitle(title) {
-  let targetProviders =
-    state.selectedProviders.size > 0
-      ? state.providers.filter((p) => state.selectedProviders.has(p.shortName))
-      : state.providers.filter((p) => p.isSubscription).slice(0, 5);
+function getSelectedProviderIdSet() {
+  const idSet = new Set();
+  for (const p of state.providers) {
+    if (state.selectedProviders.has(p.shortName) || state.selectedProviders.has(String(p.id))) {
+      idSet.add(Number(p.id));
+    }
+  }
+  return idSet;
+}
 
-  if (!targetProviders.length) {
-    targetProviders = [
-      { id: 8, name: "Netflix", shortName: "nfx", icon: "https://images.justwatch.com/icon/207360008/s100/netflix.jpg" },
-      { id: 337, name: "Disney Plus", shortName: "dnp", icon: "https://images.justwatch.com/icon/313118777/s100/disneyplus.jpg" },
-      { id: 119, name: "Amazon Prime Video", shortName: "prv", icon: "https://images.justwatch.com/icon/322992749/s100/amazonprimevideo.jpg" },
-      { id: 323, name: "Yle Areena", shortName: "yle", icon: "https://images.justwatch.com/icon/305025798/s100/yleareena.jpg" },
-    ];
+async function enrichTmdbRawItemClient(r, defaultType) {
+  const mType = r.media_type || defaultType || "movie";
+  const tmdbId = String(r.id);
+  const title = r.title || r.name || "Untitled";
+  const rel = r.release_date || r.first_air_date || "";
+  const year = rel ? parseInt(rel.slice(0, 4), 10) : null;
+  const genreIds = r.genre_ids || (r.genres ? r.genres.map((g) => g.id) : []);
+  const genres = Array.from(new Set(genreIds.map((gid) => TMDB_ID_TO_GENRE_NAME[gid]).filter(Boolean)));
+  const genreCodes = Array.from(new Set(genreIds.map((gid) => TMDB_ID_TO_JW_CODE[gid]).filter(Boolean)));
+
+  // Check if we already have full JustWatch metadata in our snapshot index
+  const cachedJw = state.jwExactUrlIndex[`${state.country}:${mType}:${tmdbId}`];
+
+  let offersAll = [];
+  try {
+    const wpCall = buildTmdbFetchArgs(`/${mType}/${r.id}/watch/providers`);
+    const wpResp = await fetch(wpCall.url, { headers: wpCall.headers });
+    if (wpResp.ok) {
+      const wpData = await wpResp.json();
+      const regionData = (wpData.results || {})[state.country] || {};
+      const fallbackLink = regionData.link || "";
+      const seenProvCat = new Set();
+
+      const mapGroup = (arr, mTypeLabel, catLabel) => {
+        const out = [];
+        for (const p of arr || []) {
+          const dedupKey = `${p.provider_id}:${catLabel}`;
+          if (seenProvCat.has(dedupKey)) continue;
+          seenProvCat.add(dedupKey);
+          const knownProv = state.providers.find((x) => Number(x.id) === Number(p.provider_id));
+          out.push({
+            providerId: p.provider_id,
+            providerName: p.provider_name,
+            providerShortName: knownProv ? knownProv.shortName : String(p.provider_id),
+            icon: p.logo_path ? `${TMDB_IMAGE_BASE}/w92${p.logo_path}` : knownProv ? knownProv.icon : "",
+            monetizationType: mTypeLabel,
+            category: catLabel,
+            quality: "HD",
+            url: buildDirectProviderUrl(p.provider_id, p.provider_name, title, fallbackLink, tmdbId, mType),
+          });
+        }
+        return out;
+      };
+
+      offersAll = [
+        ...mapGroup(regionData.flatrate, "FLATRATE", "stream"),
+        ...mapGroup(regionData.free, "FREE", "stream"),
+        ...mapGroup(regionData.ads, "ADS", "stream"),
+        ...mapGroup(regionData.rent, "RENT", "rent"),
+        ...mapGroup(regionData.buy, "BUY", "buy"),
+      ];
+    }
+  } catch (_e) {}
+
+  if (!offersAll.length && cachedJw && cachedJw.offers) {
+    offersAll = cachedJw.offers.all || [];
   }
 
-  const offers = targetProviders.map((p) => ({
-    providerId: p.id,
-    providerName: p.name,
-    providerShortName: p.shortName,
-    icon: p.icon,
-    monetizationType: "FLATRATE",
-    category: "stream",
-    quality: "HD",
-    url: buildDirectProviderUrl(p.id, p.name, title, ""),
-  }));
-
   return {
-    all: offers,
-    stream: offers,
-    rent: [],
-    buy: [],
+    id: cachedJw ? cachedJw.id : `tmdb-${mType}-${tmdbId}`,
+    tmdbId,
+    mediaType: mType,
+    title,
+    year,
+    overview: r.overview || (cachedJw && cachedJw.overview) || "",
+    poster: r.poster_path
+      ? `${TMDB_IMAGE_BASE}/w500${r.poster_path}`
+      : cachedJw
+      ? cachedJw.poster
+      : null,
+    backdrop: r.backdrop_path
+      ? `${TMDB_IMAGE_BASE}/w1280${r.backdrop_path}`
+      : cachedJw
+      ? cachedJw.backdrop
+      : null,
+    imdbScore: cachedJw ? cachedJw.imdbScore : null,
+    tmdbScore: r.vote_average ? Math.round(r.vote_average * 10) / 10 : null,
+    genres: genres.length ? genres : (cachedJw && cachedJw.genres) || [],
+    genreCodes: genreCodes.length ? genreCodes : (cachedJw && cachedJw.genreCodes) || [],
+    offers: {
+      all: offersAll,
+      stream: offersAll.filter((o) => o.category === "stream"),
+      rent: offersAll.filter((o) => o.category === "rent"),
+      buy: offersAll.filter((o) => o.category === "buy"),
+    },
   };
 }
 
-/**
- * 1) Live Zero-Key Apple iTunes Movie Search — sends `Access-Control-Allow-Origin: *`!
- */
-async function searchItunesMoviesLive(query) {
-  try {
-    const resp = await fetch(
-      `https://itunes.apple.com/search?term=${encodeURIComponent(query.trim())}&limit=18`
-    );
-    if (!resp.ok) return [];
-    const data = await resp.json();
-    return (data.results || [])
-      .filter((r) => r.kind === "feature-movie" && r.trackName)
-      .map((m) => {
-        const title = m.trackName;
-        const year = m.releaseDate ? parseInt(m.releaseDate.slice(0, 4), 10) : null;
-        const gName = m.primaryGenreName || "";
-        const gCode = GENRE_NAME_TO_CODE[gName.toLowerCase()] || "";
-        const hiResPoster = m.artworkUrl100
-          ? m.artworkUrl100.replace("100x100bb", "600x900bb")
-          : null;
-        return {
-          id: `itunes-movie-${m.trackId}`,
-          mediaType: "movie",
-          title,
-          year,
-          overview: m.longDescription || m.shortDescription || "",
-          runtime: m.trackTimeMillis ? Math.round(m.trackTimeMillis / 60000) : null,
-          ageCertification: m.contentAdvisoryRating || null,
-          poster: hiResPoster,
-          backdrop: hiResPoster,
-          imdbScore: null,
-          genres: gName ? [gName] : [],
-          genreCodes: gCode ? [gCode] : [],
-          offers: buildQuickLaunchOffersForTitle(title),
-        };
-      });
-  } catch (_e) {
-    return [];
-  }
-}
-
-/**
- * 2) Live Zero-Key TVMaze Show Search — sends `Access-Control-Allow-Origin: *`!
- */
-async function searchTvMazeLive(query) {
-  try {
-    const resp = await fetch(
-      `https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query.trim())}`
-    );
-    if (!resp.ok) return [];
-    const data = await resp.json();
-    return (data || []).slice(0, 12).map((entry) => {
-      const s = entry.show || {};
-      const title = s.name || "Untitled";
-      const year = s.premiered ? parseInt(s.premiered.slice(0, 4), 10) : null;
-      const rawGenres = s.genres || [];
-      const genreCodes = rawGenres
-        .map((g) => GENRE_NAME_TO_CODE[g.toLowerCase()])
-        .filter(Boolean);
-      const cleanSummary = (s.summary || "").replace(/<[^>]+>/g, "");
-      return {
-        id: `tvmaze-${s.id}`,
-        mediaType: "tv",
-        title,
-        year,
-        overview: cleanSummary,
-        runtime: s.averageRuntime || s.runtime || null,
-        poster: (s.image && (s.image.original || s.image.medium)) || null,
-        backdrop: (s.image && s.image.original) || null,
-        imdbScore: s.rating && s.rating.average ? s.rating.average : null,
-        genres: rawGenres,
-        genreCodes,
-        offers: buildQuickLaunchOffersForTitle(title),
-      };
-    });
-  } catch (_e) {
-    return [];
-  }
-}
-
-/**
- * 3) Live Zero-Key IMDb JSONP Search — strips non-alphanumeric chars so callback is always valid JS!
- */
-function searchImdbJsonp(query) {
-  return new Promise((resolve) => {
-    const clean = query.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (!clean) {
-      resolve([]);
-      return;
-    }
-    const firstChar = clean[0] || "a";
-    const callbackName = `imdb$${clean}`;
-    const script = document.createElement("script");
-    let finished = false;
-
-    const timer = setTimeout(() => {
-      if (!finished) {
-        finished = true;
-        cleanup();
-        resolve([]);
-      }
-    }, 3000);
-
-    function cleanup() {
-      clearTimeout(timer);
-      try {
-        delete window[callbackName];
-      } catch (_e) {
-        window[callbackName] = undefined;
-      }
-      if (script.parentNode) script.parentNode.removeChild(script);
-    }
-
-    window[callbackName] = (payload) => {
-      if (finished) return;
-      finished = true;
-      cleanup();
-      const rows = (payload && payload.d) || [];
-      const items = rows
-        .filter(
-          (r) =>
-            r.qid &&
-            (r.qid === "movie" ||
-              r.qid === "tvSeries" ||
-              r.qid === "tvMiniSeries" ||
-              r.qid === "feature")
-        )
-        .map((r) => {
-          const isTv = r.qid === "tvSeries" || r.qid === "tvMiniSeries";
-          const posterUrl = Array.isArray(r.i)
-            ? r.i[0]
-            : r.i && r.i.imageUrl
-            ? r.i.imageUrl
-            : null;
-          return {
-            id: `imdb-${r.id}`,
-            imdbId: r.id,
-            mediaType: isTv ? "tv" : "movie",
-            title: r.l || "Untitled",
-            year: r.y || null,
-            overview: r.s ? `Starring: ${r.s}` : "",
-            poster: posterUrl,
-            backdrop: posterUrl,
-            imdbScore: null,
-            genres: [],
-            genreCodes: [],
-            offers: buildQuickLaunchOffersForTitle(r.l || ""),
-          };
-        });
-      resolve(items);
-    };
-
-    script.src = `https://v2.sg.media-imdb.com/suggests/${firstChar}/${clean}.json`;
-    script.onerror = () => {
-      if (!finished) {
-        finished = true;
-        cleanup();
-        resolve([]);
-      }
-    };
-    document.head.appendChild(script);
-  });
-}
-
 async function fetchClientTmdbCatalog(pageNum = 1) {
-  const targetType = state.mediaType === "tv" ? "tv" : "movie";
-  const selectedIds = state.providers
-    .filter((p) => state.selectedProviders.has(p.shortName))
-    .map((p) => p.id);
+  const selectedIdSet = getSelectedProviderIdSet();
+  const selectedIds = Array.from(selectedIdSet);
   const selectedCats = Array.from(state.selectedCategories);
+  const q = state.searchQuery.trim();
 
-  let endpoint = `/discover/${targetType}`;
-  const params = { language: "en-US", page: pageNum };
+  // CASE 1: User typed a search query (with optional Category, Platform, MediaType, or Era filters)
+  if (q) {
+    const endpoint =
+      state.mediaType === "movie"
+        ? "/search/movie"
+        : state.mediaType === "tv"
+        ? "/search/tv"
+        : "/search/multi";
 
-  if (state.searchQuery.trim()) {
-    endpoint = state.mediaType === "all" ? "/search/multi" : `/search/${targetType}`;
-    params.query = state.searchQuery.trim();
-  } else {
-    params.watch_region = state.country;
+    // Fetch pages 1 and 2 in parallel so filtering by category or platform still yields plenty of matches
+    const [r1, r2] = await Promise.all([
+      fetch(buildTmdbFetchArgs(endpoint, { query: q, language: "en-US", page: pageNum }).url, {
+        headers: buildTmdbFetchArgs(endpoint).headers,
+      }),
+      pageNum === 1
+        ? fetch(buildTmdbFetchArgs(endpoint, { query: q, language: "en-US", page: 2 }).url, {
+            headers: buildTmdbFetchArgs(endpoint).headers,
+          })
+        : Promise.resolve(null),
+    ]);
+
+    const d1 = r1 && r1.ok ? await r1.json() : { results: [], total_results: 0, total_pages: 1 };
+    const d2 = r2 && r2.ok ? await r2.json() : { results: [] };
+    const combinedRaw = [...(d1.results || []), ...(d2.results || [])].filter((r) => {
+      const mt = r.media_type || (state.mediaType === "tv" ? "tv" : "movie");
+      if (mt !== "movie" && mt !== "tv") return false;
+      if (state.mediaType !== "all" && mt !== state.mediaType) return false;
+      if (selectedCats.length > 0) {
+        const gids = r.genre_ids || [];
+        const itemCodes = gids.map((gid) => TMDB_ID_TO_JW_CODE[gid]).filter(Boolean);
+        if (!selectedCats.some((c) => itemCodes.includes(c))) return false;
+      }
+      if (state.eraRange && state.eraRange.includes("-")) {
+        const [yMin, yMax] = state.eraRange.split("-").map((n) => parseInt(n, 10));
+        const rel = r.release_date || r.first_air_date || "";
+        const yr = rel ? parseInt(rel.slice(0, 4), 10) : 0;
+        if (yMin && yr < yMin) return false;
+        if (yMax && yr > yMax) return false;
+      }
+      return true;
+    });
+
+    const enriched = await Promise.all(
+      combinedRaw
+        .slice(0, 24)
+        .map((r) =>
+          enrichTmdbRawItemClient(
+            r,
+            r.media_type || (state.mediaType === "tv" ? "tv" : "movie")
+          )
+        )
+    );
+
+    let finalItems = enriched;
+    if (selectedIdSet.size > 0) {
+      finalItems = enriched.filter((item) =>
+        item.offers.all.some(
+          (o) =>
+            selectedIdSet.has(Number(o.providerId)) ||
+            state.selectedProviders.has(o.providerShortName)
+        )
+      );
+    }
+
+    if (state.sortBy === "IMDB_SCORE") {
+      finalItems.sort((a, b) => (b.imdbScore || b.tmdbScore || 0) - (a.imdbScore || a.tmdbScore || 0));
+    } else if (state.sortBy === "RELEASE_YEAR") {
+      finalItems.sort((a, b) => (b.year || 0) - (a.year || 0));
+    }
+
+    return {
+      totalCount: finalItems.length,
+      nextCursor: null,
+      hasNextPage: false,
+      items: finalItems,
+    };
+  }
+
+  // CASE 2: Browsing Catalog by Category / Streaming Platform / Sort / Era
+  const buildDiscoverParams = (targetType) => {
     const sortMap = {
       POPULAR: "popularity.desc",
       TRENDING: "popularity.desc",
       IMDB_SCORE: "vote_average.desc",
-      RELEASE_YEAR: targetType === "movie" ? "primary_release_date.desc" : "first_air_date.desc",
+      RELEASE_YEAR:
+        targetType === "movie" ? "primary_release_date.desc" : "first_air_date.desc",
       RANDOM: "popularity.desc",
     };
-    params.sort_by = sortMap[state.sortBy] || "popularity.desc";
-    if (state.sortBy === "IMDB_SCORE") params["vote_count.gte"] = 150;
-    if (selectedIds.length) params.with_watch_providers = selectedIds.join("|");
-    if (state.monetization === "stream") params.with_watch_monetization_types = "flatrate|free|ads";
+    const p = {
+      watch_region: state.country,
+      language: "en-US",
+      page: pageNum,
+      sort_by: sortMap[state.sortBy] || "popularity.desc",
+    };
+    if (state.sortBy === "IMDB_SCORE") p["vote_count.gte"] = 150;
+    if (selectedIds.length) p.with_watch_providers = selectedIds.join("|");
+    if (state.monetization === "stream") {
+      p.with_watch_monetization_types = "flatrate|free|ads";
+    } else {
+      p.with_watch_monetization_types = "flatrate|free|ads|rent|buy";
+    }
     if (selectedCats.length) {
       const gMap = targetType === "tv" ? JW_TO_TMDB_GENRE_TV : JW_TO_TMDB_GENRE_MOVIE;
-      const gIds = selectedCats.map((c) => gMap[c]).filter(Boolean);
-      if (gIds.length) params.with_genres = gIds.join(",");
+      const gIds = Array.from(new Set(selectedCats.map((c) => gMap[c]).filter(Boolean)));
+      if (gIds.length) p.with_genres = gIds.join(",");
     }
     if (state.eraRange && state.eraRange.includes("-")) {
       const [yMin, yMax] = state.eraRange.split("-");
       const kGte = targetType === "movie" ? "primary_release_date.gte" : "first_air_date.gte";
       const kLte = targetType === "movie" ? "primary_release_date.lte" : "first_air_date.lte";
-      if (yMin) params[kGte] = `${yMin}-01-01`;
-      if (yMax) params[kLte] = `${yMax}-12-31`;
+      if (yMin) p[kGte] = `${yMin}-01-01`;
+      if (yMax) p[kLte] = `${yMax}-12-31`;
     }
+    return p;
+  };
+
+  let rawList = [];
+  let totalResults = 0;
+  let hasMore = false;
+
+  if (state.mediaType === "all") {
+    const mArgs = buildTmdbFetchArgs("/discover/movie", buildDiscoverParams("movie"));
+    const tvArgs = buildTmdbFetchArgs("/discover/tv", buildDiscoverParams("tv"));
+    const [mResp, tvResp] = await Promise.all([
+      fetch(mArgs.url, { headers: mArgs.headers }),
+      fetch(tvArgs.url, { headers: tvArgs.headers }),
+    ]);
+    const mData = mResp.ok ? await mResp.json() : { results: [], total_results: 0, total_pages: 1 };
+    const tvData = tvResp.ok ? await tvResp.json() : { results: [], total_results: 0, total_pages: 1 };
+    const mItems = (mData.results || []).slice(0, 12).map((x) => ({ ...x, media_type: "movie" }));
+    const tvItems = (tvData.results || []).slice(0, 12).map((x) => ({ ...x, media_type: "tv" }));
+    // Interleave movies and series
+    const maxLen = Math.max(mItems.length, tvItems.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (mItems[i]) rawList.push(mItems[i]);
+      if (tvItems[i]) rawList.push(tvItems[i]);
+    }
+    totalResults = (mData.total_results || 0) + (tvData.total_results || 0);
+    hasMore = pageNum < Math.max(mData.total_pages || 1, tvData.total_pages || 1);
+  } else {
+    const targetType = state.mediaType === "tv" ? "tv" : "movie";
+    const dArgs = buildTmdbFetchArgs(`/discover/${targetType}`, buildDiscoverParams(targetType));
+    const resp = await fetch(dArgs.url, { headers: dArgs.headers });
+    const data = resp.ok ? await resp.json() : { results: [], total_results: 0, total_pages: 1 };
+    rawList = (data.results || []).slice(0, 20).map((x) => ({ ...x, media_type: targetType }));
+    totalResults = data.total_results || rawList.length;
+    hasMore = pageNum < (data.total_pages || 1);
   }
 
-  const { url, headers } = buildTmdbFetchArgs(endpoint, params);
-  const resp = await fetch(url, { headers });
-  const data = await resp.json();
-  const rawResults = (data.results || [])
-    .filter((r) => (r.media_type || targetType) === "movie" || (r.media_type || targetType) === "tv")
-    .slice(0, 18);
-
-  const items = await Promise.all(
-    rawResults.map(async (r) => {
-      const mType = r.media_type || targetType;
-      const title = r.title || r.name || "Untitled";
-      const rel = r.release_date || r.first_air_date || "";
-      const year = rel ? parseInt(rel.slice(0, 4), 10) : null;
-      const genres = (r.genre_ids || []).map((gid) => TMDB_ID_TO_GENRE_NAME[gid]).filter(Boolean);
-
-      let offersAll = [];
-      try {
-        const wpCall = buildTmdbFetchArgs(`/${mType}/${r.id}/watch/providers`);
-        const wpResp = await fetch(wpCall.url, { headers: wpCall.headers });
-        if (wpResp.ok) {
-          const wpData = await wpResp.json();
-          const regionData = (wpData.results || {})[state.country] || {};
-          const fallbackLink = regionData.link || "";
-          const mapGroup = (arr, mTypeLabel, catLabel) =>
-            (arr || []).map((p) => ({
-              providerId: p.provider_id,
-              providerName: p.provider_name,
-              providerShortName: `tmdb_${p.provider_id}`,
-              icon: p.logo_path ? `${TMDB_IMAGE_BASE}/w92${p.logo_path}` : "",
-              monetizationType: mTypeLabel,
-              category: catLabel,
-              quality: "HD",
-              url: buildDirectProviderUrl(p.provider_id, p.provider_name, title, fallbackLink),
-            }));
-          offersAll = [
-            ...mapGroup(regionData.flatrate, "FLATRATE", "stream"),
-            ...mapGroup(regionData.free, "FREE", "stream"),
-            ...mapGroup(regionData.ads, "ADS", "stream"),
-            ...mapGroup(regionData.rent, "RENT", "rent"),
-            ...mapGroup(regionData.buy, "BUY", "buy"),
-          ];
-        }
-      } catch (_e) {}
-
-      return {
-        id: `tmdb-${mType}-${r.id}`,
-        tmdbId: String(r.id),
-        mediaType: mType,
-        title,
-        year,
-        overview: r.overview || "",
-        poster: r.poster_path ? `${TMDB_IMAGE_BASE}/w500${r.poster_path}` : null,
-        backdrop: r.backdrop_path ? `${TMDB_IMAGE_BASE}/w1280${r.backdrop_path}` : null,
-        tmdbScore: r.vote_average ? Math.round(r.vote_average * 10) / 10 : null,
-        genres: Array.from(new Set(genres)),
-        offers: {
-          all: offersAll,
-          stream: offersAll.filter((o) => o.category === "stream"),
-          rent: offersAll.filter((o) => o.category === "rent"),
-          buy: offersAll.filter((o) => o.category === "buy"),
-        },
-      };
-    })
+  let items = await Promise.all(
+    rawList.map((r) => enrichTmdbRawItemClient(r, r.media_type))
   );
 
+  if (state.sortBy === "RANDOM") {
+    items = [...items].sort(() => Math.random() - 0.5);
+  }
+
   return {
-    totalCount: data.total_results || items.length,
-    nextCursor: data.page < data.total_pages ? String(pageNum + 1) : null,
-    hasNextPage: data.page < data.total_pages,
+    totalCount: totalResults,
+    nextCursor: hasMore ? String(pageNum + 1) : null,
+    hasNextPage: hasMore,
     items,
-  };
-}
-
-async function searchOrBrowseStaticAndLive() {
-  const pool =
-    (state.staticSnapshot &&
-      state.staticSnapshot.catalog &&
-      (state.staticSnapshot.catalog[state.country] || state.staticSnapshot.catalog["FI"])) ||
-    [];
-  const q = state.searchQuery.trim().toLowerCase();
-  const qTokens = q.split(/\s+/).filter(Boolean);
-  const selectedCats = Array.from(state.selectedCategories);
-  const selectedShorts = state.selectedProviders;
-
-  const matchesMetadataFilters = (item, isFromLiveSearchAPI = false) => {
-    if (state.mediaType !== "all" && item.mediaType !== state.mediaType) return false;
-
-    if (!isFromLiveSearchAPI && qTokens.length > 0) {
-      const hay = `${item.title} ${item.overview || ""} ${(item.genres || []).join(" ")}`
-        .toLowerCase()
-        .replace(/[-:]/g, " ");
-      const allMatched = qTokens.every((tok) => hay.includes(tok.replace(/[-:]/g, "")));
-      if (!allMatched) return false;
-    }
-
-    if (selectedCats.length > 0) {
-      const codes = item.genreCodes || [];
-      const names = item.genres || [];
-      if (codes.length > 0 || names.length > 0) {
-        const matchesCat = selectedCats.some((cId) => {
-          const catObj = state.categories.find((c) => c.id === cId);
-          return codes.includes(cId) || (catObj && names.includes(catObj.name));
-        });
-        if (!matchesCat) return false;
-      }
-    }
-
-    if (!isFromLiveSearchAPI && selectedShorts.size > 0) {
-      const hasProv = ((item.offers && item.offers.all) || []).some((o) =>
-        selectedShorts.has(o.providerShortName)
-      );
-      if (!hasProv) return false;
-    }
-
-    if (state.eraRange && state.eraRange.includes("-")) {
-      const [yMin, yMax] = state.eraRange.split("-").map((n) => parseInt(n, 10));
-      if (yMin && (item.year || 0) < yMin) return false;
-      if (yMax && (item.year || 9999) > yMax) return false;
-    }
-    return true;
-  };
-
-  let filtered = pool.filter((item) => matchesMetadataFilters(item, false));
-
-  // When user searches for any title, also query live CORS/JSONP APIs (IMDb + iTunes Movies + TVMaze)
-  if (q.length >= 2) {
-    const [imdbResults, itunesResults, tvmazeResults] = await Promise.all([
-      searchImdbJsonp(q),
-      state.mediaType === "tv" ? Promise.resolve([]) : searchItunesMoviesLive(q),
-      state.mediaType === "movie" ? Promise.resolve([]) : searchTvMazeLive(q),
-    ]);
-
-    const seenTitles = new Set(
-      filtered.map((x) => `${(x.title || "").toLowerCase().replace(/[^a-z0-9]/g, "")}-${x.year || ""}`)
-    );
-
-    for (const liveItem of [...imdbResults, ...itunesResults, ...tvmazeResults]) {
-      const normKey = `${(liveItem.title || "").toLowerCase().replace(/[^a-z0-9]/g, "")}-${
-        liveItem.year || ""
-      }`;
-      if (!seenTitles.has(normKey) && matchesMetadataFilters(liveItem, true)) {
-        seenTitles.add(normKey);
-        filtered.push(liveItem);
-      }
-    }
-  }
-
-  if (state.sortBy === "IMDB_SCORE") {
-    filtered.sort((a, b) => (b.imdbScore || b.tmdbScore || 0) - (a.imdbScore || a.tmdbScore || 0));
-  } else if (state.sortBy === "RELEASE_YEAR") {
-    filtered.sort((a, b) => (b.year || 0) - (a.year || 0));
-  } else if (state.sortBy === "RANDOM") {
-    filtered = [...filtered].sort(() => Math.random() - 0.5);
-  }
-
-  return {
-    totalCount: filtered.length,
-    nextCursor: null,
-    hasNextPage: false,
-    items: filtered,
   };
 }
 
@@ -917,9 +799,7 @@ function updateTmdbStatusUI(tmdb) {
   } else {
     els.tmdbStatusDot.className = "status-dot";
     els.tmdbStatusText.textContent = "Setup TMDB Key";
-    els.tmdbModalStatusBox.innerHTML = state.backendAvailable
-      ? `⚡ <strong>Active Engine:</strong> Live JustWatch GraphQL Catalog + Direct Streaming Links (Zero-key mode). Add a free TMDB API key below to enable hybrid TMDB discovery & trailers.`
-      : `🌐 <strong>Standalone / GitHub Pages Mode Active:</strong> Built-in 415+ catalog + Live Universal Search (IMDb, Apple iTunes & TVMaze). Paste a free <strong>TMDB API Key</strong> below to unlock full TMDB provider discovery!`;
+    els.tmdbModalStatusBox.innerHTML = `⚡ Paste a TMDB API Key below to connect.`;
   }
 }
 
@@ -930,22 +810,31 @@ async function loadProviders() {
       const resp = await fetch(`${state.apiBase}/api/providers?country=${encodeURIComponent(state.country)}`);
       const data = await resp.json();
       state.providers = data.providers || [];
-    } else if (state.clientTmdbKey && state.tmdbStatus.valid) {
+    } else if (
+      state.staticSnapshot &&
+      state.staticSnapshot.providers &&
+      state.staticSnapshot.providers[state.country]
+    ) {
+      // Use the rich provider list for FI / US (which has exact JustWatch shortNames AND TMDB IDs!)
+      state.providers = state.staticSnapshot.providers[state.country];
+    } else {
+      // Fetch live regional providers from TMDB for any other country (SE, NO, DK, DE, GB, etc.)
       const { url, headers } = buildTmdbFetchArgs("/watch/providers/movie", { watch_region: state.country });
       const resp = await fetch(url, { headers });
       const data = await resp.json();
-      state.providers = (data.results || []).slice(0, 30).map((p) => ({
+      const raw = data.results || [];
+      raw.sort((a, b) => {
+        const pa = (a.display_priorities && a.display_priorities[state.country]) ?? a.display_priority ?? 999;
+        const pb = (b.display_priorities && b.display_priorities[state.country]) ?? b.display_priority ?? 999;
+        return pa - pb;
+      });
+      state.providers = raw.slice(0, 30).map((p) => ({
         id: p.provider_id,
-        shortName: `tmdb_${p.provider_id}`,
+        shortName: String(p.provider_id),
         name: p.provider_name,
         icon: p.logo_path ? `${TMDB_IMAGE_BASE}/w92${p.logo_path}` : "",
         isSubscription: true,
       }));
-    } else if (state.staticSnapshot) {
-      state.providers =
-        (state.staticSnapshot.providers &&
-          (state.staticSnapshot.providers[state.country] || state.staticSnapshot.providers["FI"])) ||
-        [];
     }
     const validShorts = new Set(state.providers.map((p) => p.shortName));
     for (const s of Array.from(state.selectedProviders)) {
@@ -1028,11 +917,9 @@ async function loadCatalog(reset = true) {
       }
       const resp = await fetch(`${state.apiBase}/api/catalog?${params.toString()}`);
       data = await resp.json();
-    } else if (state.clientTmdbKey && state.tmdbStatus.valid) {
+    } else {
       const pageNum = !reset && state.nextCursor ? parseInt(state.nextCursor, 10) : 1;
       data = await fetchClientTmdbCatalog(pageNum);
-    } else {
-      data = await searchOrBrowseStaticAndLive();
     }
 
     const newItems = data.items || [];
@@ -1060,10 +947,17 @@ async function loadCatalog(reset = true) {
 
 function getPreferredOffersForCard(item) {
   const allOffers = (item.offers && item.offers.all) || [];
-  if (state.selectedProviders.size > 0) {
+  const selectedIdSet = getSelectedProviderIdSet();
+  if (selectedIdSet.size > 0 || state.selectedProviders.size > 0) {
     return [...allOffers].sort((a, b) => {
-      const aSel = state.selectedProviders.has(a.providerShortName) ? 0 : 1;
-      const bSel = state.selectedProviders.has(b.providerShortName) ? 0 : 1;
+      const aSel =
+        selectedIdSet.has(Number(a.providerId)) || state.selectedProviders.has(a.providerShortName)
+          ? 0
+          : 1;
+      const bSel =
+        selectedIdSet.has(Number(b.providerId)) || state.selectedProviders.has(b.providerShortName)
+          ? 0
+          : 1;
       return aSel - bSel;
     });
   }
@@ -1198,14 +1092,18 @@ async function openTitleDetail(nodeId, tmdbId, mediaType) {
       d = await resp.json();
     } else {
       d = state.items.find((x) => x.id === nodeId) || state.watchlist[nodeId] || {};
-      if (state.clientTmdbKey && tmdbId) {
+      if (tmdbId) {
         const { url, headers } = buildTmdbFetchArgs(`/${mediaType || "movie"}/${tmdbId}`, {
           append_to_response: "videos,credits",
         });
         const resp = await fetch(url, { headers });
         if (resp.ok) {
           const tData = await resp.json();
-          d = { ...d, runtime: tData.runtime || d.runtime, overview: tData.overview || d.overview };
+          d = {
+            ...d,
+            runtime: tData.runtime || (tData.episode_run_time && tData.episode_run_time[0]) || d.runtime,
+            overview: tData.overview || d.overview,
+          };
           const vids = (tData.videos && tData.videos.results) || [];
           const trailer = vids.find((v) => v.site === "YouTube" && (v.type === "Trailer" || v.type === "Teaser"));
           if (trailer) d.trailerUrl = `https://www.youtube.com/watch?v=${trailer.key}`;
@@ -1263,7 +1161,7 @@ async function openTitleDetail(nodeId, tmdbId, mediaType) {
               ${d.runtime ? `<span>• ${d.runtime} min</span>` : ""}
               ${d.ageCertification ? `<span>• ${escapeHtml(d.ageCertification)}</span>` : ""}
               ${d.imdbScore ? `<span style="color:#fbbf24;font-weight:700;">• ★ ${d.imdbScore} IMDb</span>` : ""}
-              ${d.tmdbScore ? `<span style="color:#38bdf8;font-weight:700;">• ${d.tmdbScore} TMDB</span>` : ""}
+              ${d.tmdbScore ? `<span style="color:#38bdf8;font-weight:700;">• ★ ${d.tmdbScore} TMDB</span>` : ""}
             </div>
             ${
               d.genres && d.genres.length
@@ -1613,7 +1511,7 @@ function bindEvents() {
   // Save & Verify TMDB API Key
   els.tmdbKeyForm.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const keyVal = els.tmdbKeyInput.value.trim();
+    const keyVal = els.tmdbKeyInput.value.trim() || DEFAULT_TMDB_API_KEY;
     els.tmdbModalStatusBox.textContent = "Verifying TMDB API key...";
     let result = null;
     if (state.backendAvailable) {
@@ -1625,12 +1523,12 @@ function bindEvents() {
       result = await resp.json();
     } else {
       result = await verifyClientTmdbKey(keyVal);
-      if (result.valid || !keyVal) {
+      if (result.valid) {
         localStorage.setItem("streampulse_tmdb_key", keyVal);
       }
     }
     updateTmdbStatusUI(result);
-    if (result.valid || !keyVal) {
+    if (result.valid) {
       els.tmdbKeyInput.value = "";
       await loadProviders();
       await loadCatalog(true);
