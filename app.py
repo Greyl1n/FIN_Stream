@@ -143,6 +143,7 @@ async def get_catalog(
     sort_by: str = Query("POPULAR", description="POPULAR | TRENDING | IMDB_SCORE | RELEASE_YEAR | RANDOM"),
     year_min: int | None = Query(None, description="Minimum release year"),
     year_max: int | None = Query(None, description="Maximum release year"),
+    past_month: bool = Query(False, description="Only titles released in the past 30 days"),
     after: str | None = Query(None, description="Pagination cursor"),
 ) -> dict[str, Any]:
     """Search for titles or browse combined inventory across selected streaming services & categories."""
@@ -162,6 +163,7 @@ async def get_catalog(
             sort_by=sort_by,
             year_min=year_min,
             year_max=year_max,
+            past_month=past_month,
             after=after,
         )
     except Exception as exc:

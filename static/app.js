@@ -20,43 +20,54 @@ const DEFAULT_TMDB_API_KEY = "596395204d6b71ecf4dda2988e7e4226";
 const TMDB_API_BASE = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
 
-const JW_TO_TMDB_GENRE_MOVIE = {
-  act: 28,
-  ani: 16,
-  cmy: 35,
-  crm: 80,
-  doc: 99,
-  drm: 18,
-  fml: 10751,
-  fnt: 14,
-  hrr: 27,
-  hst: 36,
-  msc: 10402,
-  rma: 10749,
-  scf: 878,
-  trl: 53,
-  war: 10752,
-  wsn: 37,
+const CATEGORY_CODE_TO_NAME = {
+  act: "Action & Adventure",
+  ani: "Animation",
+  cmy: "Comedy",
+  crm: "Crime",
+  doc: "Documentary",
+  drm: "Drama",
+  fml: "Kids & Family",
+  fnt: "Fantasy",
+  hrr: "Horror",
+  hst: "History",
+  msc: "Music",
+  trl: "Mystery & Thriller",
+  rma: "Romance",
+  scf: "Sci-Fi",
+  spt: "Sports",
+  war: "War & Military",
+  wsn: "Western",
+  rly: "Reality TV",
+  eur: "Made in Europe",
 };
 
-const JW_TO_TMDB_GENRE_TV = {
-  act: 10759,
-  ani: 16,
-  cmy: 35,
-  crm: 80,
-  doc: 99,
-  drm: 18,
-  fml: 10751,
-  fnt: 10765,
-  hrr: 9648,
-  hst: 36,
-  msc: 10402,
-  rly: 10764,
-  rma: 10749,
-  scf: 10765,
-  trl: 9648,
-  war: 10768,
-  wsn: 37,
+// Exact TMDB Discover rules per JustWatch category code for Movie vs TV.
+// Note: TMDB TV lacks standalone genre IDs for Horror (27), Romance (10749),
+// History (36), Music (10402), and Sports, so we use verified TMDB keyword/origin filters.
+const CATEGORY_TMDB_RULES = {
+  act: { movie: { genres: "28|12" }, tv: { genres: "10759" } },
+  ani: { movie: { genres: "16" }, tv: { genres: "16" } },
+  cmy: { movie: { genres: "35" }, tv: { genres: "35" } },
+  crm: { movie: { genres: "80" }, tv: { genres: "80" } },
+  doc: { movie: { genres: "99" }, tv: { genres: "99" } },
+  drm: { movie: { genres: "18" }, tv: { genres: "18" } },
+  fml: { movie: { genres: "10751" }, tv: { genres: "10751|10762" } },
+  fnt: { movie: { genres: "14" }, tv: { genres: "10765", keywords: "818|2343|177912|4152" } },
+  hrr: { movie: { genres: "27" }, tv: { keywords: "315058|256183|10224|9714|12377|161261" } },
+  hst: { movie: { genres: "36" }, tv: { keywords: "15126|10085|210608" } },
+  msc: { movie: { genres: "10402" }, tv: { keywords: "6029|4344" } },
+  trl: { movie: { genres: "53|9648" }, tv: { genres: "9648" } },
+  rma: { movie: { genres: "10749" }, tv: { keywords: "9840" } },
+  scf: { movie: { genres: "878" }, tv: { genres: "10765", withoutKeywords: "818|2343" } },
+  spt: { movie: { keywords: "6075" }, tv: { keywords: "6075" } },
+  war: { movie: { genres: "10752" }, tv: { genres: "10768" } },
+  wsn: { movie: { genres: "37" }, tv: { genres: "37" } },
+  rly: { movie: null, tv: { genres: "10764" } },
+  eur: {
+    movie: { originCountries: "FI|SE|NO|DK|GB|FR|DE|ES|IT|IE|NL|BE|PL" },
+    tv: { originCountries: "FI|SE|NO|DK|GB|FR|DE|ES|IT|IE|NL|BE|PL" },
+  },
 };
 
 const TMDB_ID_TO_GENRE_NAME = {
@@ -69,8 +80,9 @@ const TMDB_ID_TO_GENRE_NAME = {
   99: "Documentary",
   18: "Drama",
   10751: "Kids & Family",
+  10762: "Kids & Family",
   14: "Fantasy",
-  10765: "Sci-Fi",
+  10765: "Sci-Fi & Fantasy",
   36: "History",
   27: "Horror",
   10402: "Music",
@@ -94,6 +106,7 @@ const TMDB_ID_TO_JW_CODE = {
   99: "doc",
   18: "drm",
   10751: "fml",
+  10762: "fml",
   14: "fnt",
   10765: "scf",
   36: "hst",
@@ -146,6 +159,7 @@ const state = {
   monetization: "stream",
   sortBy: "POPULAR",
   eraRange: "",
+  pastMonthOnly: false,
   nextCursor: null,
   hasNextPage: false,
   items: [],
@@ -170,6 +184,7 @@ const els = {
   monetizationControl: document.getElementById("monetizationControl"),
   sortSelect: document.getElementById("sortSelect"),
   eraSelect: document.getElementById("eraSelect"),
+  pastMonthBtn: document.getElementById("pastMonthBtn"),
   activeFiltersBar: document.getElementById("activeFiltersBar"),
   resultsMeta: document.getElementById("resultsMeta"),
   titlesGrid: document.getElementById("titlesGrid"),
@@ -382,18 +397,77 @@ function getSelectedProviderIdSet() {
   return idSet;
 }
 
-async function enrichTmdbRawItemClient(r, defaultType) {
+function doesRawTmdbItemMatchCategory(r, mediaType, catCode) {
+  const tmdbId = String(r.id);
+  const cachedJw =
+    state.jwExactUrlIndex[`${state.country}:${mediaType}:${tmdbId}`] ||
+    state.jwExactUrlIndex[`FI:${mediaType}:${tmdbId}`] ||
+    state.jwExactUrlIndex[`US:${mediaType}:${tmdbId}`];
+  if (cachedJw && Array.isArray(cachedJw.genreCodes) && cachedJw.genreCodes.includes(catCode)) {
+    return true;
+  }
+
+  const gids = r.genre_ids || (r.genres ? r.genres.map((g) => g.id) : []);
+  const itemCodes = gids.map((gid) => TMDB_ID_TO_JW_CODE[gid]).filter(Boolean);
+  if (itemCodes.includes(catCode)) return true;
+
+  // TV Sci-Fi & Fantasy (10765) covers both Sci-Fi (scf) and Fantasy (fnt)
+  if (mediaType === "tv" && catCode === "fnt" && gids.includes(10765)) return true;
+
+  // European origin check
+  if (catCode === "eur") {
+    const origins = r.origin_country || [];
+    const eurSet = new Set(["FI", "SE", "NO", "DK", "GB", "FR", "DE", "ES", "IT", "IE", "NL", "BE", "PL"]);
+    if (origins.some((c) => eurSet.has(c))) return true;
+  }
+
+  // Keyword fallback for categories without a dedicated TMDB TV/Movie genre ID
+  const text = `${r.title || r.name || ""} ${r.overview || ""}`.toLowerCase();
+  const keywordRegexMap = {
+    hrr: /\b(horror|haunt|vampire|zombie|demon|ghost|supernatural|slasher|terrifying|nightmare|serial killer|monster)\b/i,
+    spt: /\b(sport|football|soccer|basketball|baseball|hockey|formula 1|f1|racing|tennis|boxing|olympic|coach|athlete|championship)\b/i,
+    rma: /\b(romance|romantic|love story|fall in love|falls in love|wedding|heartbreak)\b/i,
+    hst: /\b(histor|century|world war|ancient|empire|dynasty|tudor|viking|medieval|biopic)\b/i,
+    msc: /\b(music|musical|concert|singer|band|songwriter|hip-hop|rock star|orchestra)\b/i,
+  };
+  if (keywordRegexMap[catCode] && keywordRegexMap[catCode].test(text)) {
+    return true;
+  }
+  return false;
+}
+
+async function enrichTmdbRawItemClient(r, defaultType, enforcedCategoryCodes = []) {
   const mType = r.media_type || defaultType || "movie";
   const tmdbId = String(r.id);
   const title = r.title || r.name || "Untitled";
   const rel = r.release_date || r.first_air_date || "";
   const year = rel ? parseInt(rel.slice(0, 4), 10) : null;
   const genreIds = r.genre_ids || (r.genres ? r.genres.map((g) => g.id) : []);
-  const genres = Array.from(new Set(genreIds.map((gid) => TMDB_ID_TO_GENRE_NAME[gid]).filter(Boolean)));
-  const genreCodes = Array.from(new Set(genreIds.map((gid) => TMDB_ID_TO_JW_CODE[gid]).filter(Boolean)));
 
   // Check if we already have full JustWatch metadata in our snapshot index
   const cachedJw = state.jwExactUrlIndex[`${state.country}:${mType}:${tmdbId}`];
+
+  const genreNameSet = new Set();
+  const genreCodeSet = new Set();
+
+  // Ensure enforced category codes from active Discover filters appear first on cards
+  for (const code of enforcedCategoryCodes) {
+    if (CATEGORY_CODE_TO_NAME[code]) {
+      genreCodeSet.add(code);
+      genreNameSet.add(CATEGORY_CODE_TO_NAME[code]);
+    }
+  }
+  for (const gid of genreIds) {
+    if (TMDB_ID_TO_GENRE_NAME[gid]) genreNameSet.add(TMDB_ID_TO_GENRE_NAME[gid]);
+    if (TMDB_ID_TO_JW_CODE[gid]) genreCodeSet.add(TMDB_ID_TO_JW_CODE[gid]);
+  }
+  if (cachedJw) {
+    for (const g of cachedJw.genres || []) genreNameSet.add(g);
+    for (const c of cachedJw.genreCodes || []) genreCodeSet.add(c);
+  }
+
+  const genres = Array.from(genreNameSet);
+  const genreCodes = Array.from(genreCodeSet);
 
   let offersAll = [];
   try {
@@ -446,6 +520,7 @@ async function enrichTmdbRawItemClient(r, defaultType) {
     mediaType: mType,
     title,
     year,
+    releaseDate: rel || (cachedJw && cachedJw.releaseDate) || null,
     overview: r.overview || (cachedJw && cachedJw.overview) || "",
     poster: r.poster_path
       ? `${TMDB_IMAGE_BASE}/w500${r.poster_path}`
@@ -459,8 +534,8 @@ async function enrichTmdbRawItemClient(r, defaultType) {
       : null,
     imdbScore: cachedJw ? cachedJw.imdbScore : null,
     tmdbScore: r.vote_average ? Math.round(r.vote_average * 10) / 10 : null,
-    genres: genres.length ? genres : (cachedJw && cachedJw.genres) || [],
-    genreCodes: genreCodes.length ? genreCodes : (cachedJw && cachedJw.genreCodes) || [],
+    genres,
+    genreCodes,
     offers: {
       all: offersAll,
       stream: offersAll.filter((o) => o.category === "stream"),
@@ -470,13 +545,21 @@ async function enrichTmdbRawItemClient(r, defaultType) {
   };
 }
 
+function getPastMonthDateBounds() {
+  const now = new Date();
+  const past = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  return { minDate: fmt(past), maxDate: fmt(now) };
+}
+
 async function fetchClientTmdbCatalog(pageNum = 1) {
   const selectedIdSet = getSelectedProviderIdSet();
   const selectedIds = Array.from(selectedIdSet);
   const selectedCats = Array.from(state.selectedCategories);
   const q = state.searchQuery.trim();
+  const pastMonthBounds = state.pastMonthOnly ? getPastMonthDateBounds() : null;
 
-  // CASE 1: User typed a search query (with optional Category, Platform, MediaType, or Era filters)
+  // CASE 1: User typed a search query (with optional Category, Platform, MediaType, Era, or Past Month filters)
   if (q) {
     const endpoint =
       state.mediaType === "movie"
@@ -504,13 +587,13 @@ async function fetchClientTmdbCatalog(pageNum = 1) {
       if (mt !== "movie" && mt !== "tv") return false;
       if (state.mediaType !== "all" && mt !== state.mediaType) return false;
       if (selectedCats.length > 0) {
-        const gids = r.genre_ids || [];
-        const itemCodes = gids.map((gid) => TMDB_ID_TO_JW_CODE[gid]).filter(Boolean);
-        if (!selectedCats.some((c) => itemCodes.includes(c))) return false;
+        if (!selectedCats.every((c) => doesRawTmdbItemMatchCategory(r, mt, c))) return false;
       }
-      if (state.eraRange && state.eraRange.includes("-")) {
+      const rel = r.release_date || r.first_air_date || "";
+      if (pastMonthBounds) {
+        if (!rel || rel < pastMonthBounds.minDate || rel > pastMonthBounds.maxDate) return false;
+      } else if (state.eraRange && state.eraRange.includes("-")) {
         const [yMin, yMax] = state.eraRange.split("-").map((n) => parseInt(n, 10));
-        const rel = r.release_date || r.first_air_date || "";
         const yr = rel ? parseInt(rel.slice(0, 4), 10) : 0;
         if (yMin && yr < yMin) return false;
         if (yMax && yr > yMax) return false;
@@ -524,7 +607,8 @@ async function fetchClientTmdbCatalog(pageNum = 1) {
         .map((r) =>
           enrichTmdbRawItemClient(
             r,
-            r.media_type || (state.mediaType === "tv" ? "tv" : "movie")
+            r.media_type || (state.mediaType === "tv" ? "tv" : "movie"),
+            selectedCats
           )
         )
     );
@@ -554,7 +638,7 @@ async function fetchClientTmdbCatalog(pageNum = 1) {
     };
   }
 
-  // CASE 2: Browsing Catalog by Category / Streaming Platform / Sort / Era
+  // CASE 2: Browsing Catalog by Category / Streaming Platform / Sort / Era / Past Month
   const buildDiscoverParams = (targetType) => {
     const sortMap = {
       POPULAR: "popularity.desc",
@@ -570,7 +654,7 @@ async function fetchClientTmdbCatalog(pageNum = 1) {
       page: pageNum,
       sort_by: sortMap[state.sortBy] || "popularity.desc",
     };
-    if (state.sortBy === "IMDB_SCORE") p["vote_count.gte"] = 150;
+    if (state.sortBy === "IMDB_SCORE") p["vote_count.gte"] = pastMonthBounds ? 10 : 150;
     if (selectedIds.length) p.with_watch_providers = selectedIds.join("|");
     if (state.monetization === "stream") {
       p.with_watch_monetization_types = "flatrate|free|ads";
@@ -578,14 +662,39 @@ async function fetchClientTmdbCatalog(pageNum = 1) {
       p.with_watch_monetization_types = "flatrate|free|ads|rent|buy";
     }
     if (selectedCats.length) {
-      const gMap = targetType === "tv" ? JW_TO_TMDB_GENRE_TV : JW_TO_TMDB_GENRE_MOVIE;
-      const gIds = Array.from(new Set(selectedCats.map((c) => gMap[c]).filter(Boolean)));
-      if (gIds.length) p.with_genres = gIds.join(",");
+      const genreParts = [];
+      const keywordParts = [];
+      const withoutKeywordParts = [];
+      const originParts = [];
+
+      for (const catCode of selectedCats) {
+        const ruleGroup = CATEGORY_TMDB_RULES[catCode];
+        if (!ruleGroup) continue;
+        const rule = ruleGroup[targetType];
+        // If a category does not exist for this media type (e.g. Reality TV for movies), skip this media type completely
+        if (rule === null) return null;
+        if (rule.genres) genreParts.push(rule.genres);
+        if (rule.keywords) keywordParts.push(rule.keywords);
+        if (rule.withoutKeywords) withoutKeywordParts.push(rule.withoutKeywords);
+        if (rule.originCountries) originParts.push(rule.originCountries);
+      }
+
+      if (genreParts.length) p.with_genres = Array.from(new Set(genreParts)).join(",");
+      if (keywordParts.length) p.with_keywords = Array.from(new Set(keywordParts)).join(",");
+      if (withoutKeywordParts.length) {
+        p.without_keywords = Array.from(new Set(withoutKeywordParts)).join("|");
+      }
+      if (originParts.length) {
+        p.with_origin_country = Array.from(new Set(originParts)).join("|");
+      }
     }
-    if (state.eraRange && state.eraRange.includes("-")) {
+    const kGte = targetType === "movie" ? "primary_release_date.gte" : "first_air_date.gte";
+    const kLte = targetType === "movie" ? "primary_release_date.lte" : "first_air_date.lte";
+    if (pastMonthBounds) {
+      p[kGte] = pastMonthBounds.minDate;
+      p[kLte] = pastMonthBounds.maxDate;
+    } else if (state.eraRange && state.eraRange.includes("-")) {
       const [yMin, yMax] = state.eraRange.split("-");
-      const kGte = targetType === "movie" ? "primary_release_date.gte" : "first_air_date.gte";
-      const kLte = targetType === "movie" ? "primary_release_date.lte" : "first_air_date.lte";
       if (yMin) p[kGte] = `${yMin}-01-01`;
       if (yMax) p[kLte] = `${yMax}-12-31`;
     }
@@ -597,16 +706,26 @@ async function fetchClientTmdbCatalog(pageNum = 1) {
   let hasMore = false;
 
   if (state.mediaType === "all") {
-    const mArgs = buildTmdbFetchArgs("/discover/movie", buildDiscoverParams("movie"));
-    const tvArgs = buildTmdbFetchArgs("/discover/tv", buildDiscoverParams("tv"));
-    const [mResp, tvResp] = await Promise.all([
-      fetch(mArgs.url, { headers: mArgs.headers }),
-      fetch(tvArgs.url, { headers: tvArgs.headers }),
-    ]);
-    const mData = mResp.ok ? await mResp.json() : { results: [], total_results: 0, total_pages: 1 };
-    const tvData = tvResp.ok ? await tvResp.json() : { results: [], total_results: 0, total_pages: 1 };
-    const mItems = (mData.results || []).slice(0, 12).map((x) => ({ ...x, media_type: "movie" }));
-    const tvItems = (tvData.results || []).slice(0, 12).map((x) => ({ ...x, media_type: "tv" }));
+    const movieParams = buildDiscoverParams("movie");
+    const tvParams = buildDiscoverParams("tv");
+    const mPromise = movieParams
+      ? fetch(buildTmdbFetchArgs("/discover/movie", movieParams).url, {
+          headers: buildTmdbFetchArgs("/discover/movie").headers,
+        })
+      : Promise.resolve(null);
+    const tvPromise = tvParams
+      ? fetch(buildTmdbFetchArgs("/discover/tv", tvParams).url, {
+          headers: buildTmdbFetchArgs("/discover/tv").headers,
+        })
+      : Promise.resolve(null);
+
+    const [mResp, tvResp] = await Promise.all([mPromise, tvPromise]);
+    const mData = mResp && mResp.ok ? await mResp.json() : { results: [], total_results: 0, total_pages: 1 };
+    const tvData = tvResp && tvResp.ok ? await tvResp.json() : { results: [], total_results: 0, total_pages: 1 };
+    const mLimit = tvParams ? 12 : 20;
+    const tvLimit = movieParams ? 12 : 20;
+    const mItems = (mData.results || []).slice(0, mLimit).map((x) => ({ ...x, media_type: "movie" }));
+    const tvItems = (tvData.results || []).slice(0, tvLimit).map((x) => ({ ...x, media_type: "tv" }));
     // Interleave movies and series
     const maxLen = Math.max(mItems.length, tvItems.length);
     for (let i = 0; i < maxLen; i++) {
@@ -617,16 +736,19 @@ async function fetchClientTmdbCatalog(pageNum = 1) {
     hasMore = pageNum < Math.max(mData.total_pages || 1, tvData.total_pages || 1);
   } else {
     const targetType = state.mediaType === "tv" ? "tv" : "movie";
-    const dArgs = buildTmdbFetchArgs(`/discover/${targetType}`, buildDiscoverParams(targetType));
-    const resp = await fetch(dArgs.url, { headers: dArgs.headers });
-    const data = resp.ok ? await resp.json() : { results: [], total_results: 0, total_pages: 1 };
-    rawList = (data.results || []).slice(0, 20).map((x) => ({ ...x, media_type: targetType }));
-    totalResults = data.total_results || rawList.length;
-    hasMore = pageNum < (data.total_pages || 1);
+    const targetParams = buildDiscoverParams(targetType);
+    if (targetParams) {
+      const dArgs = buildTmdbFetchArgs(`/discover/${targetType}`, targetParams);
+      const resp = await fetch(dArgs.url, { headers: dArgs.headers });
+      const data = resp.ok ? await resp.json() : { results: [], total_results: 0, total_pages: 1 };
+      rawList = (data.results || []).slice(0, 20).map((x) => ({ ...x, media_type: targetType }));
+      totalResults = data.total_results || rawList.length;
+      hasMore = pageNum < (data.total_pages || 1);
+    }
   }
 
   let items = await Promise.all(
-    rawList.map((r) => enrichTmdbRawItemClient(r, r.media_type))
+    rawList.map((r) => enrichTmdbRawItemClient(r, r.media_type, selectedCats))
   );
 
   if (state.sortBy === "RANDOM") {
@@ -767,7 +889,14 @@ function renderActiveFiltersBar() {
     }
   }
 
-  if (state.eraRange) {
+  if (state.pastMonthOnly) {
+    chips.push(`
+      <span class="filter-chip">
+        🆕 New in Past Month (30d)
+        <button data-clear-type="pastMonth" title="Remove past month filter">✕</button>
+      </span>
+    `);
+  } else if (state.eraRange) {
     chips.push(`
       <span class="filter-chip">
         🗓️ ${escapeHtml(state.eraRange)}
@@ -896,7 +1025,7 @@ async function loadCatalog(reset = true) {
 
   try {
     let data = null;
-    if (state.backendAvailable) {
+    if (state.backendAvailable && !state.pastMonthOnly) {
       const params = new URLSearchParams({
         country: state.country,
         q: state.searchQuery,
@@ -918,7 +1047,7 @@ async function loadCatalog(reset = true) {
       const resp = await fetch(`${state.apiBase}/api/catalog?${params.toString()}`);
       data = await resp.json();
     } else {
-      const pageNum = !reset && state.nextCursor ? parseInt(state.nextCursor, 10) : 1;
+      const pageNum = !reset && state.nextCursor && /^\d+$/.test(String(state.nextCursor)) ? parseInt(state.nextCursor, 10) : 1;
       data = await fetchClientTmdbCatalog(pageNum);
     }
 
@@ -931,11 +1060,12 @@ async function loadCatalog(reset = true) {
       .map((id) => (state.categories.find((c) => c.id === id) || {}).name || id)
       .join(" + ");
     const catSummary = catNames ? ` in ${catNames}` : "";
+    const pastMonthSummary = state.pastMonthOnly ? " released in past 30 days" : "";
     const platformSummary =
       selectedShortList.length > 0
         ? ` on ${selectedShortList.length} selected platform(s)`
         : ` across ${state.country} platforms`;
-    els.resultsMeta.textContent = `${(data.totalCount || state.items.length).toLocaleString()} titles${catSummary}${platformSummary}`;
+    els.resultsMeta.textContent = `${(data.totalCount || state.items.length).toLocaleString()} titles${catSummary}${pastMonthSummary}${platformSummary}`;
 
     renderTitlesGrid(state.items);
     els.loadMoreContainer.classList.toggle("hidden", !state.hasNextPage);
@@ -1054,7 +1184,7 @@ function renderTitlesGrid(items) {
             <div class="card-title-row" data-action="detail">
               <h3 class="card-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h3>
               <div class="card-sub">
-                ${item.year || "—"} ${item.genres && item.genres.length ? "• " + escapeHtml(item.genres.slice(0, 2).join(", ")) : ""}
+                ${state.pastMonthOnly && item.releaseDate ? `🆕 ${escapeHtml(item.releaseDate)}` : item.year || "—"} ${item.genres && item.genres.length ? "• " + escapeHtml(item.genres.slice(0, 2).join(", ")) : ""}
               </div>
             </div>
 
@@ -1368,6 +1498,9 @@ function bindEvents() {
     } else if (type === "era") {
       state.eraRange = "";
       els.eraSelect.value = "";
+    } else if (type === "pastMonth") {
+      state.pastMonthOnly = false;
+      if (els.pastMonthBtn) els.pastMonthBtn.classList.remove("active");
     } else if (type === "all") {
       state.searchQuery = "";
       els.searchInput.value = "";
@@ -1377,6 +1510,8 @@ function bindEvents() {
       localStorage.setItem("streampulse_providers", "[]");
       state.eraRange = "";
       els.eraSelect.value = "";
+      state.pastMonthOnly = false;
+      if (els.pastMonthBtn) els.pastMonthBtn.classList.remove("active");
       syncCategoriesUI();
       renderProvidersRail();
     }
@@ -1448,8 +1583,27 @@ function bindEvents() {
   // Release Era Select
   els.eraSelect.addEventListener("change", (e) => {
     state.eraRange = e.target.value;
+    if (state.eraRange) {
+      state.pastMonthOnly = false;
+      if (els.pastMonthBtn) els.pastMonthBtn.classList.remove("active");
+    }
     loadCatalog(true);
   });
+
+  // New Releases in Past Month Quick Toggle Button
+  if (els.pastMonthBtn) {
+    els.pastMonthBtn.addEventListener("click", () => {
+      state.pastMonthOnly = !state.pastMonthOnly;
+      els.pastMonthBtn.classList.toggle("active", state.pastMonthOnly);
+      if (state.pastMonthOnly) {
+        state.eraRange = "";
+        els.eraSelect.value = "";
+      }
+      state.showingWatchlist = false;
+      els.watchlistToggleBtn.classList.remove("active");
+      loadCatalog(true);
+    });
+  }
 
   // Load More
   els.loadMoreBtn.addEventListener("click", () => {
@@ -1490,6 +1644,8 @@ function bindEvents() {
     state.selectedCategories.clear();
     state.eraRange = "";
     els.eraSelect.value = "";
+    state.pastMonthOnly = false;
+    if (els.pastMonthBtn) els.pastMonthBtn.classList.remove("active");
     state.showingWatchlist = false;
     els.watchlistToggleBtn.classList.remove("active");
     syncCategoriesUI();

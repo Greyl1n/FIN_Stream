@@ -521,6 +521,41 @@ body {
   color: #fff;
 }
 
+.era-filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.past-month-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.16s ease;
+}
+
+.past-month-btn:hover {
+  border-color: var(--border-highlight);
+  background: var(--bg-card-hover);
+}
+
+.past-month-btn.active {
+  background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 12px var(--accent-glow);
+}
+
 .results-meta {
   margin-left: auto;
   font-size: 0.83rem;
@@ -1272,6 +1307,23 @@ body {
   .select-group {
     flex: 1 1 calc(50% - 4px);
     min-width: 0;
+  }
+
+  .era-filter-group {
+    flex: 1 1 100%;
+    display: flex;
+    gap: 6px;
+  }
+
+  .era-filter-group .filter-select {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .past-month-btn {
+    padding: 7px 10px;
+    font-size: 0.76rem;
+    flex-shrink: 0;
   }
 
   .filter-select {

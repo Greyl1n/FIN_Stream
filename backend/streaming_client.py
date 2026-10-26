@@ -482,10 +482,12 @@ class StreamingInventoryClient:
         }
         """
 
+        active_genres = [g for g in (genres or []) if g in GENRE_MAP_JW_TO_NAME]
+        fetch_count = max(first, 36) if active_genres else first
         variables = {
             "country": country,
             "language": "en",
-            "first": first,
+            "first": fetch_count,
             "after": after,
             "sortBy": jw_sort,
             "sortRandomSeed": random_seed,
@@ -499,6 +501,12 @@ class StreamingInventoryClient:
         payload = resp.json().get("data", {}).get("popularTitles") or {}
         edges = payload.get("edges") or []
         items = [self._format_jw_node(edge["node"]) for edge in edges if edge.get("node")]
+        if active_genres:
+            items = [
+                item
+                for item in items
+                if all(g in (item.get("genreCodes") or []) for g in active_genres)
+            ][:first]
 
         return {
             "totalCount": payload.get("totalCount", len(items)),
@@ -632,6 +640,7 @@ class StreamingInventoryClient:
             "mediaType": media_type,
             "title": title,
             "year": year or matched_content.get("originalReleaseYear"),
+            "releaseDate": release_date or None,
             "overview": tmdb_item.get("overview") or "",
             "runtime": matched_content.get("runtime"),
             "poster": f"{TMDB_IMAGE_BASE}/w500{poster_path}" if poster_path else None,
@@ -665,14 +674,19 @@ class StreamingInventoryClient:
         sort_by: str = "POPULAR",
         year_min: int | None = None,
         year_max: int | None = None,
+        past_month: bool = False,
         after: str | None = None,
     ) -> dict[str, Any]:
         """
         Unified search & inventory discovery method with full category/genre filtering,
-        sorting, and release year bounds.
+        sorting, and release year / past-month bounds.
         """
+        import datetime as _dt
+
         country = country.upper()
         active_genres = [g.strip() for g in (genres or []) if g.strip() in GENRE_MAP_JW_TO_NAME]
+        today_str = _dt.date.today().isoformat()
+        month_ago_str = (_dt.date.today() - _dt.timedelta(days=30)).isoformat()
 
         # When TMDB API key is configured and user searches or browses on page 1 (and not using RANDOM sort):
         if self.tmdb_api_key and not after and sort_by != "RANDOM":
@@ -696,7 +710,14 @@ class StreamingInventoryClient:
                             for r in raw_results
                             if r.get("media_type", media_type if media_type in ("movie", "tv") else "movie")
                             in ("movie", "tv")
-                        ][:16]
+                        ]
+                        if past_month:
+                            filtered = [
+                                r
+                                for r in filtered
+                                if month_ago_str <= (r.get("release_date") or r.get("first_air_date") or "") <= today_str
+                            ]
+                        filtered = filtered[:16]
                         enriched = list(
                             await asyncio.gather(
                                 *[
@@ -726,58 +747,84 @@ class StreamingInventoryClient:
                             "items": enriched,
                             "engine": "tmdb+justwatch_hybrid",
                         }
-                elif not search_query.strip():
-                    # TMDB Discover across selected watch providers + categories
-                    target_type = "tv" if media_type == "tv" else "movie"
-                    tmdb_sort_map = {
-                        "POPULAR": "popularity.desc",
-                        "TRENDING": "popularity.desc",
-                        "IMDB_SCORE": "vote_average.desc",
-                        "RELEASE_YEAR": "primary_release_date.desc" if target_type == "movie" else "first_air_date.desc",
-                    }
-                    discover_params: dict[str, Any] = {
-                        "watch_region": country,
-                        "sort_by": tmdb_sort_map.get(sort_by, "popularity.desc"),
-                        "language": "en-US",
-                        "page": 1,
-                    }
-                    if sort_by == "IMDB_SCORE":
-                        discover_params["vote_count.gte"] = 200
-                    if provider_ids:
-                        discover_params["with_watch_providers"] = "|".join(str(pid) for pid in provider_ids)
-                    if monetization == "stream":
-                        discover_params["with_watch_monetization_types"] = "flatrate|free|ads"
-                    if active_genres:
-                        tmdb_gids = [str(TMDB_TO_JW_GENRE[g]) for g in active_genres if g in TMDB_TO_JW_GENRE]
-                        if tmdb_gids:
-                            discover_params["with_genres"] = ",".join(tmdb_gids)
-                    if year_min:
-                        date_key = "primary_release_date.gte" if target_type == "movie" else "first_air_date.gte"
-                        discover_params[date_key] = f"{year_min}-01-01"
-                    if year_max:
-                        date_key = "primary_release_date.lte" if target_type == "movie" else "first_air_date.lte"
-                        discover_params[date_key] = f"{year_max}-12-31"
+                elif not search_query.strip() and (past_month or not active_genres):
+                    # TMDB Discover across selected watch providers (and exact 30-day release window when past_month=True)
+                    target_types = ["movie", "tv"] if (past_month and media_type == "all") else (["tv"] if media_type == "tv" else ["movie"])
+                    combined_raw: list[tuple[dict[str, Any], str]] = []
+                    total_count_sum = 0
+                    for t_type in target_types:
+                        tmdb_sort_map = {
+                            "POPULAR": "popularity.desc",
+                            "TRENDING": "popularity.desc",
+                            "IMDB_SCORE": "vote_average.desc",
+                            "RELEASE_YEAR": "primary_release_date.desc" if t_type == "movie" else "first_air_date.desc",
+                        }
+                        discover_params: dict[str, Any] = {
+                            "watch_region": country,
+                            "sort_by": tmdb_sort_map.get(sort_by, "popularity.desc"),
+                            "language": "en-US",
+                            "page": 1,
+                        }
+                        if sort_by == "IMDB_SCORE":
+                            discover_params["vote_count.gte"] = 10 if past_month else 200
+                        if provider_ids:
+                            discover_params["with_watch_providers"] = "|".join(str(pid) for pid in provider_ids)
+                        if monetization == "stream":
+                            discover_params["with_watch_monetization_types"] = "flatrate|free|ads"
+                        else:
+                            discover_params["with_watch_monetization_types"] = "flatrate|free|ads|rent|buy"
+                        if active_genres:
+                            tmdb_gids = [str(TMDB_TO_JW_GENRE[g]) for g in active_genres if g in TMDB_TO_JW_GENRE]
+                            if tmdb_gids:
+                                discover_params["with_genres"] = ",".join(tmdb_gids)
+                        date_gte_key = "primary_release_date.gte" if t_type == "movie" else "first_air_date.gte"
+                        date_lte_key = "primary_release_date.lte" if t_type == "movie" else "first_air_date.lte"
+                        if past_month:
+                            discover_params[date_gte_key] = month_ago_str
+                            discover_params[date_lte_key] = today_str
+                        else:
+                            if year_min:
+                                discover_params[date_gte_key] = f"{year_min}-01-01"
+                            if year_max:
+                                discover_params[date_lte_key] = f"{year_max}-12-31"
 
-                    headers, params = self._tmdb_headers_and_params(discover_params)
-                    resp = await self._http.get(
-                        f"{TMDB_API_BASE}/discover/{target_type}",
-                        headers=headers,
-                        params=params,
-                    )
-                    if resp.status_code == 200:
-                        raw_results = (resp.json().get("results") or [])[:16]
+                        headers, params = self._tmdb_headers_and_params(discover_params)
+                        resp = await self._http.get(
+                            f"{TMDB_API_BASE}/discover/{t_type}",
+                            headers=headers,
+                            params=params,
+                        )
+                        if resp.status_code == 200:
+                            data_json = resp.json()
+                            total_count_sum += data_json.get("total_results", 0)
+                            limit = 8 if len(target_types) == 2 else 16
+                            for r in (data_json.get("results") or [])[:limit]:
+                                combined_raw.append((r, t_type))
+
+                    if combined_raw:
+                        if len(target_types) == 2:
+                            m_list = [x for x in combined_raw if x[1] == "movie"]
+                            tv_list = [x for x in combined_raw if x[1] == "tv"]
+                            interleaved: list[tuple[dict[str, Any], str]] = []
+                            for idx in range(max(len(m_list), len(tv_list))):
+                                if idx < len(m_list):
+                                    interleaved.append(m_list[idx])
+                                if idx < len(tv_list):
+                                    interleaved.append(tv_list[idx])
+                            combined_raw = interleaved
+
                         enriched = list(
                             await asyncio.gather(
                                 *[
-                                    self.enrich_tmdb_item_with_direct_links(r, target_type, country)
-                                    for r in raw_results
+                                    self.enrich_tmdb_item_with_direct_links(r, t_type, country)
+                                    for r, t_type in combined_raw
                                 ]
                             )
                         )
                         return {
-                            "totalCount": resp.json().get("total_results", len(enriched)),
-                            "nextCursor": "NQ==",
-                            "hasNextPage": True,
+                            "totalCount": total_count_sum or len(enriched),
+                            "nextCursor": "2" if past_month else "NQ==",
+                            "hasNextPage": len(enriched) >= 12,
                             "items": enriched,
                             "engine": "tmdb+justwatch_hybrid",
                         }
